@@ -12,7 +12,8 @@ logger = logging.getLogger("scan-db")
 _DB_DIR  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 _DB_PATH = os.path.join(_DB_DIR, "scan.db")
 
-_SCHEMA = """
+# 基础建表 Schema（不含新增迁移列，保证对旧库兼容）
+_BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_name TEXT NOT NULL,
@@ -21,7 +22,6 @@ CREATE TABLE IF NOT EXISTS projects (
     tags TEXT,
     source TEXT,
     rootdata_id INTEGER,
-    rootdata_url TEXT,
     cryptorank_slug TEXT,
     total_funding REAL,
     latest_round TEXT,
@@ -33,9 +33,6 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(project_name)
 );
-
-CREATE INDEX IF NOT EXISTS idx_projects_rootdata_url ON projects(rootdata_url);
-
 CREATE TABLE IF NOT EXISTS tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER REFERENCES projects(id),
@@ -55,14 +52,12 @@ CREATE TABLE IF NOT EXISTS tokens (
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(token_symbol, chain)
 );
-
 CREATE TABLE IF NOT EXISTS scan_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id TEXT NOT NULL,
     scan_type TEXT,
     status TEXT DEFAULT 'running',
     total_projects INTEGER DEFAULT 0,
-    new_projects INTEGER DEFAULT 0,
     funded_with_token INTEGER DEFAULT 0,
     not_listed INTEGER DEFAULT 0,
     cmc_verified INTEGER DEFAULT 0,
@@ -72,7 +67,7 @@ CREATE TABLE IF NOT EXISTS scan_logs (
 );
 """
 
-# 迁移脚本：对已有 DB 补列（幂等）
+# 增量迁移列（对旧库执行 ALTER TABLE，新库由 _BASE_SCHEMA 后补）
 _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN rootdata_url TEXT",
     "CREATE INDEX IF NOT EXISTS idx_projects_rootdata_url ON projects(rootdata_url)",
@@ -91,8 +86,10 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db():
     conn = get_connection()
-    conn.executescript(_SCHEMA)
-    # 迁移旧库（忽略"列已存在"错误）
+    # 1. 建基础表（幂等）
+    conn.executescript(_BASE_SCHEMA)
+    conn.commit()
+    # 2. 迁移新列（忽略"duplicate column"错误）
     for sql in _MIGRATIONS:
         try:
             conn.execute(sql)
@@ -277,7 +274,7 @@ def update_scan_log(conn: sqlite3.Connection, scan_id: str, **kwargs):
 def get_projects(conn: sqlite3.Connection, offset=0, limit=50,
                  source=None, search=None) -> tuple[list[dict], int]:
     """查询项目列表，返回 (rows, total)。"""
-    where = []
+    where  = []
     params = []
     if source:
         where.append("p.source LIKE ?")
@@ -308,7 +305,7 @@ def get_projects(conn: sqlite3.Connection, offset=0, limit=50,
 
 def get_stats(conn: sqlite3.Connection) -> dict:
     """统计概览。"""
-    total = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    total      = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
     with_token = conn.execute(
         "SELECT COUNT(DISTINCT project_id) FROM tokens WHERE token_symbol != ''"
     ).fetchone()[0]
@@ -316,15 +313,15 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "SELECT COUNT(DISTINCT project_id) FROM tokens "
         "WHERE cmc_listed = 0 AND cr_traded = 0 AND token_symbol != ''"
     ).fetchone()[0]
-    last_scan = conn.execute(
+    last_scan  = conn.execute(
         "SELECT * FROM scan_logs ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
 
     return {
         "total_projects": total,
-        "with_token": with_token,
-        "not_listed": not_listed,
-        "last_scan": dict(last_scan) if last_scan else None,
+        "with_token":     with_token,
+        "not_listed":     not_listed,
+        "last_scan":      dict(last_scan) if last_scan else None,
     }
 
 
@@ -335,7 +332,6 @@ def get_scan_logs(conn: sqlite3.Connection, limit=20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-# 初始化
 if __name__ == "__main__":
     init_db()
     print(f"数据库已创建: {_DB_PATH}")
