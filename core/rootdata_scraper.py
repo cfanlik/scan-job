@@ -47,17 +47,26 @@ class RootDataCDPScraper:
         if self._page is not None:
             return
         from playwright.sync_api import sync_playwright
+        from core.config import get_proxy
+
         self._pw = sync_playwright().start()
+        
+        args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-first-run",
+            "--disable-extensions",
+        ]
+        
+        proxy_url = get_proxy()
+        if proxy_url:
+            args.append(f"--proxy-server={proxy_url}")
+
         self._browser = self._pw.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--disable-extensions",
-            ],
+            args=args,
         )
         self._context = self._browser.new_context(
             user_agent=(
@@ -371,13 +380,17 @@ class RootDataCDPScraper:
 
         self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="domcontentloaded", timeout=60000)
         
-        # 显式等待核心内容或侧边栏加载完毕，而不是信赖可能僵死的 networkidle
+        # 显式等待第一次的表格数据加载完成。加上代理后速度可能稍慢。
         try:
-            self._page.wait_for_selector(".left-filter, .filter-box, tbody tr", timeout=15000)
-        except Exception:
+            self._page.wait_for_selector("tbody tr", timeout=45000)
+            if on_log:
+                on_log("[RootData] 初次页面表格载入成功")
+        except Exception as e:
+            if on_log:
+                on_log("[RootData] 等待初次表格加载超时，尝试继续执行")
             pass
             
-        time.sleep(3)
+        time.sleep(2)
 
         if not self._check_login():
             if on_log:
@@ -392,10 +405,10 @@ class RootDataCDPScraper:
                     timeout=60000,
                 )
                 try:
-                    self._page.wait_for_selector(".left-filter, .filter-box, tbody tr", timeout=15000)
+                    self._page.wait_for_selector("tbody tr", timeout=45000)
                 except Exception:
                     pass
-                time.sleep(3)
+                time.sleep(2)
 
         self._dismiss_overlays()
 
@@ -403,10 +416,8 @@ class RootDataCDPScraper:
         if on_log:
             on_log("[RootData] 应用高级筛选: Token Issuance -> With Token")
         try:
-            # Token Issuance 可能被折叠，需先确认它可见
             sidebar = self._page.query_selector(".v-navigation-drawer--active, .left-filter, .filter-box")
             if sidebar:
-                # 寻找包含 With Token 的 label
                 self._page.evaluate("""
                     document.querySelectorAll('label').forEach(l => {
                         if(l.innerText.includes('With Token') || l.textContent.includes('With Token')) {
@@ -414,7 +425,12 @@ class RootDataCDPScraper:
                         }
                     });
                 """)
-                time.sleep(3)  # 等待列表重新刷新加载数据
+                # 显式等待列表的刷新动作
+                time.sleep(5)
+                try:
+                    self._page.wait_for_selector("tbody tr", timeout=20000)
+                except:
+                    pass
         except Exception as e:
             logger.warning("[RootData] 点击 With Token 失败: %s", e)
             if on_log:
