@@ -45,32 +45,44 @@ class TokenDiscovery:
         all_coins: list[dict] = []
 
         for start in [1, 5001, 10001, 15001]:
-            try:
-                with httpx.Client(
-                    proxy=self.proxy, timeout=30, verify=False, headers=headers
-                ) as client:
-                    resp = client.get(
-                        "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map",
-                        params={
-                            "listing_status": "active",
-                            "start": start,
-                            "limit": 5000,
-                            "sort": "id",
-                        },
-                    )
-                    data = resp.json()
-                    items = data.get("data", [])
-                    all_coins.extend(items)
-                    if on_log:
-                        on_log(f"[Discovery] CMC map batch start={start}: {len(items)} 币种")
-                    if len(items) < 5000:
+            fetched = False
+            # 尝试: 代理 → 直连回退
+            proxies_to_try = [self.proxy, None] if self.proxy else [None]
+            for px in proxies_to_try:
+                try:
+                    with httpx.Client(
+                        proxy=px, timeout=30, verify=False, headers=headers
+                    ) as client:
+                        resp = client.get(
+                            "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map",
+                            params={
+                                "listing_status": "active",
+                                "start": start,
+                                "limit": 5000,
+                                "sort": "id",
+                            },
+                        )
+                        data = resp.json()
+                        items = data.get("data", [])
+                        all_coins.extend(items)
+                        mode = "代理" if px else "直连"
+                        if on_log:
+                            on_log(f"[Discovery] CMC map batch start={start}: {len(items)} 币种 ({mode})")
+                        fetched = True
                         break
-                    time.sleep(1)
-            except Exception as e:
-                logger.warning("[Discovery] CMC map 下载失败 start=%d: %s", start, e)
-                if on_log:
-                    on_log(f"[Discovery] CMC map 下载失败 start={start}: {e}")
+                except Exception as e:
+                    if px is not None:
+                        if on_log:
+                            on_log(f"[Discovery] 代理失败({e}), 回退直连")
+                        continue
+                    logger.warning("[Discovery] CMC map 下载失败 start=%d: %s", start, e)
+                    if on_log:
+                        on_log(f"[Discovery] CMC map 下载失败 start={start}: {e}")
+            if not fetched:
                 break
+            if len(items) < 5000:
+                break
+            time.sleep(1)
 
         # 构建索引
         self._name_map.clear()
@@ -86,7 +98,8 @@ class TokenDiscovery:
             if not name or not symbol or not is_active:
                 continue
 
-            entry = {"symbol": symbol, "slug": slug, "id": cmc_id, "name": name}
+            entry = {"symbol": symbol, "slug": slug,
+                     "id": cmc_id, "name": name}
 
             key = name.lower()
             if key not in self._name_map:
@@ -171,26 +184,17 @@ class TokenDiscovery:
                         "match_method": "slug_stripped",
                     }
 
-        # L3: fuzzy 前缀匹配（项目名 ≥ 5 字符，且长度比 ≥ 0.6）
-        if len(key) >= 5:
+        # L3: fuzzy 子串匹配（项目名 ≥ 4 字符）
+        if len(key) >= 4:
             for cmc_name, entries in self._name_map.items():
-                if len(cmc_name) < 5:
-                    continue
-                # 只允许前缀匹配，不允许任意子串
-                if not (cmc_name.startswith(key) or key.startswith(cmc_name)):
-                    continue
-                # 长度比检查：两者长度差异不能超过 40%
-                shorter = min(len(key), len(cmc_name))
-                longer = max(len(key), len(cmc_name))
-                if shorter / longer < 0.6:
-                    continue
-                e = entries[0]
-                return {
-                    "symbol": e["symbol"],
-                    "cmc_name": e["name"],
-                    "cmc_id": e["id"],
-                    "match_method": "fuzzy",
-                }
+                if len(cmc_name) >= 4 and (key in cmc_name or cmc_name in key):
+                    e = entries[0]
+                    return {
+                        "symbol": e["symbol"],
+                        "cmc_name": e["name"],
+                        "cmc_id": e["id"],
+                        "match_method": "fuzzy",
+                    }
 
         return None
 
@@ -240,8 +244,10 @@ class TokenDiscovery:
         }
 
         if on_log:
-            pct = stats["matched"] / stats["total"] * 100 if stats["total"] else 0
-            on_log(f"[Discovery] 完成: {stats['matched']}/{stats['total']} 匹配 ({pct:.1f}%)")
+            pct = stats["matched"] / stats["total"] * \
+                100 if stats["total"] else 0
+            on_log(
+                f"[Discovery] 完成: {stats['matched']}/{stats['total']} 匹配 ({pct:.1f}%)")
             for method, count in by_method.items():
                 on_log(f"[Discovery]   {method}: {count}")
 
