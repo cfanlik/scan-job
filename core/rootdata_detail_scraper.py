@@ -88,8 +88,8 @@ class RootDataDetailScraper:
             page = ctx.new_page()
 
             # 访问登录页
-            page.goto(f"{_CN_SITE}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(2)
+            page.goto(f"{_CN_SITE}/login", wait_until="domcontentloaded", timeout=60000)
+            time.sleep(5)
 
             # 输入邮箱密码
             email_input = page.query_selector("input[type='text'], input[placeholder*='邮箱'], input[placeholder*='email']")
