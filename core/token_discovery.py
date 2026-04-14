@@ -171,17 +171,26 @@ class TokenDiscovery:
                         "match_method": "slug_stripped",
                     }
 
-        # L3: fuzzy 子串匹配（项目名 ≥ 4 字符）
-        if len(key) >= 4:
+        # L3: fuzzy 前缀匹配（项目名 ≥ 5 字符，且长度比 ≥ 0.6）
+        if len(key) >= 5:
             for cmc_name, entries in self._name_map.items():
-                if len(cmc_name) >= 4 and (key in cmc_name or cmc_name in key):
-                    e = entries[0]
-                    return {
-                        "symbol": e["symbol"],
-                        "cmc_name": e["name"],
-                        "cmc_id": e["id"],
-                        "match_method": "fuzzy",
-                    }
+                if len(cmc_name) < 5:
+                    continue
+                # 只允许前缀匹配，不允许任意子串
+                if not (cmc_name.startswith(key) or key.startswith(cmc_name)):
+                    continue
+                # 长度比检查：两者长度差异不能超过 40%
+                shorter = min(len(key), len(cmc_name))
+                longer = max(len(key), len(cmc_name))
+                if shorter / longer < 0.6:
+                    continue
+                e = entries[0]
+                return {
+                    "symbol": e["symbol"],
+                    "cmc_name": e["name"],
+                    "cmc_id": e["id"],
+                    "match_method": "fuzzy",
+                }
 
         return None
 
