@@ -3,12 +3,12 @@ RootData 融资数据爬虫 (Playwright 无头模式)
 
 架构:
   playwright Chromium 无头 → 登录 cn.rootdata.com → DOM 提取融资列表 → 分页翻页
-  兼容 Linux VPS 无桌面环境（原 DrissionPage CDP 方案已废弃）
+  兼容 Linux VPS 无桌面环境
 
 数据流:
   1. 启动无头 Chromium → 检测登录态 → 未登录则自动登录
   2. 导航 /Fundraising → 解析渲染后的 DOM 表格
-  3. btn-next 逐页点击 + 内容变化检测翻页
+  3. JS click 绕过遮罩 + btn-next + 内容变化检测翻页
   4. 去重合并进 scanner 流程
 
 采集频率: 一天一次
@@ -68,7 +68,6 @@ class RootDataCDPScraper:
         self._page = self._context.new_page()
 
     def _check_login(self) -> bool:
-        """URL 判断 + 按钮检测."""
         url = self._page.url or ""
         if "/login" in url:
             return False
@@ -88,7 +87,6 @@ class RootDataCDPScraper:
             if on_log:
                 on_log("[RootData] 未配置 ROOTDATA_EMAIL/PASSWORD")
             return False
-
         if on_log:
             on_log("[RootData] 执行登录...")
 
@@ -107,15 +105,12 @@ class RootDataCDPScraper:
         time.sleep(0.3)
 
         for btn in self._page.query_selector_all("button"):
-            txt = btn.inner_text().strip()
-            if txt == "登录":
+            if btn.inner_text().strip() == "登录":
                 btn.click()
                 break
 
         try:
-            self._page.wait_for_url(
-                lambda url: "/login" not in url, timeout=10000
-            )
+            self._page.wait_for_url(lambda url: "/login" not in url, timeout=10000)
         except Exception:
             pass
 
@@ -125,14 +120,29 @@ class RootDataCDPScraper:
             on_log(f"[RootData] 登录{'成功' if success else '失败'}")
         return success
 
-    def _dismiss_popups(self):
-        """关闭常见弹窗."""
+    def _dismiss_overlays(self):
+        """用 JS 强制隐藏遮罩层，避免遮挡点击。"""
+        try:
+            self._page.evaluate("""
+                // 隐藏弹窗遮罩背景
+                document.querySelectorAll(
+                    'div.bg[data-v-453a4645], .v-overlay, .v-dialog__overlay, ' +
+                    '.modal-backdrop, .el-overlay'
+                ).forEach(el => {
+                    el.style.display = 'none';
+                    el.style.pointerEvents = 'none';
+                    el.style.visibility = 'hidden';
+                });
+            """)
+        except Exception:
+            pass
+        # 文字关闭按钮
         for text in ["稍后", "稍后再说", "关闭", "我知道了"]:
             try:
                 btn = self._page.query_selector(f"text={text}")
                 if btn and btn.is_visible():
-                    btn.click()
-                    time.sleep(0.3)
+                    btn.evaluate("el => el.click()")
+                    time.sleep(0.2)
             except Exception:
                 pass
 
@@ -141,7 +151,7 @@ class RootDataCDPScraper:
     # ────────────────────────────────────────
 
     def _parse_current_page(self) -> list[dict]:
-        """从当前渲染的 DOM 表格提取融资项目列表.
+        """从当前渲染的 DOM 表格提取融资项目列表。
 
         表格列结构:
           td[0]: 项目名 + 描述 + logo
@@ -149,17 +159,15 @@ class RootDataCDPScraper:
           td[2]: 金额
           td[3]: 估值
           td[4]: 日期
-          td[5+]: 投资方
+          td[6]: 投资方
         """
         projects = []
-
         try:
             self._page.wait_for_selector("tbody tr", timeout=10000)
         except Exception:
             return projects
 
         rows = self._page.query_selector_all("tbody tr")
-
         for row in rows:
             try:
                 tds = row.query_selector_all("td")
@@ -167,8 +175,6 @@ class RootDataCDPScraper:
                     continue
 
                 td0 = tds[0]
-
-                # ── td[0]: 项目名 + href + logo ──
                 link = td0.query_selector("a[href*='/Projects/detail/']")
                 if not link:
                     continue
@@ -191,7 +197,6 @@ class RootDataCDPScraper:
                     img = link.query_selector("img")
                     if img:
                         name = img.get_attribute("alt") or ""
-
                 if not name:
                     continue
 
@@ -206,16 +211,10 @@ class RootDataCDPScraper:
                 except Exception:
                     pass
 
-                # ── td[1]: 轮次 ──
-                round_text = tds[1].inner_text().strip() if len(tds) > 1 else ""
-
-                # ── td[2]: 金额 ──
+                round_text  = tds[1].inner_text().strip() if len(tds) > 1 else ""
                 amount_text = tds[2].inner_text().strip() if len(tds) > 2 else ""
+                date_text   = tds[4].inner_text().strip() if len(tds) > 4 else ""
 
-                # ── td[4]: 日期 ──
-                date_text = tds[4].inner_text().strip() if len(tds) > 4 else ""
-
-                # ── td[6]: 投资方 ──
                 investors = []
                 if len(tds) > 6:
                     inv_td = tds[6]
@@ -233,42 +232,33 @@ class RootDataCDPScraper:
                                 if part and part != "--" and not part.startswith("+"):
                                     investors.append(part)
 
-                proj = {
-                    "project_name": name,
-                    "source": "rootdata",
-                    "rootdata_url": (
-                        href if href.startswith("http") else f"{_SITE_BASE}{href}"
-                    ),
-                    "total_funding": self._parse_amount(amount_text),
-                    "latest_round": self._clean_round(round_text),
+                projects.append({
+                    "project_name":      name,
+                    "source":            "rootdata",
+                    "rootdata_url":      href if href.startswith("http") else f"{_SITE_BASE}{href}",
+                    "total_funding":     self._parse_amount(amount_text),
+                    "latest_round":      self._clean_round(round_text),
                     "latest_round_date": self._parse_date(date_text),
-                    "description": desc[:500],
-                    "tags": "[]",
-                    "investors": (
-                        json.dumps(investors, ensure_ascii=False) if investors else "[]"
-                    ),
-                    "token_symbol": "",
-                    "logo": logo,
-                }
-                projects.append(proj)
+                    "description":       desc[:500],
+                    "tags":              "[]",
+                    "investors":         json.dumps(investors, ensure_ascii=False) if investors else "[]",
+                    "token_symbol":      "",
+                    "logo":              logo,
+                })
             except Exception:
                 continue
-
         return projects
 
     @staticmethod
     def _parse_amount(text: str):
-        """解析金额: '1500 万美元', '1.2 亿美元', '$50M', '--'."""
         if not text or text.strip() in ("--", "N/A", ""):
             return None
         m = re.search(r"(\d+(?:\.\d+)?)\s*(亿|万|千万|百万|M|B)?", text)
         if not m:
             return None
-        val = float(m.group(1))
+        val  = float(m.group(1))
         unit = m.group(2) or ""
-        mul = {
-            "亿": 1e8, "万": 1e4, "千万": 1e7, "百万": 1e6, "M": 1e6, "B": 1e9
-        }.get(unit, 1)
+        mul  = {"亿": 1e8, "万": 1e4, "千万": 1e7, "百万": 1e6, "M": 1e6, "B": 1e9}.get(unit, 1)
         val *= mul
         return val if val >= 1000 else None
 
@@ -284,24 +274,23 @@ class RootDataCDPScraper:
             return ""
         text = text.strip()
         if re.match(r"^\d{2}-\d{2}$", text):
-            year = datetime.now().year
-            return f"{year}-{text}"
+            return f"{datetime.now().year}-{text}"
         return text
 
     def _go_next_page(self, target: int) -> bool:
-        """点击 btn-next 翻到下一页，通过内容变化检测确认翻页成功。"""
+        """JS click 绕过遮罩点击 btn-next，内容变化检测确认翻页。"""
         try:
-            # 优先使用右箭头 btn-next 按钮
+            self._dismiss_overlays()
+
             next_btn = self._page.query_selector(
                 "button.btn-next, .el-pagination .btn-next"
             )
             if next_btn:
-                disabled = next_btn.get_attribute("disabled")
-                if disabled is not None:
-                    logger.debug("[RootData] btn-next 已禁用(最后一页)")
+                if next_btn.get_attribute("disabled") is not None:
+                    logger.debug("[RootData] btn-next disabled (last page)")
                     return False
 
-                # 记录第一行内容，用于检测页面是否已刷新
+                # 记录翻页前首行内容
                 first_row_text = ""
                 try:
                     rows = self._page.query_selector_all("tbody tr")
@@ -310,10 +299,11 @@ class RootDataCDPScraper:
                 except Exception:
                     pass
 
-                next_btn.click()
+                # JS 直接触发，绕过遮罩层 pointer-events 拦截
+                next_btn.evaluate("el => el.click()")
 
-                # 轮询等待内容变化（最多 12s）
-                deadline = time.time() + 12
+                # 轮询等待内容变化（最多 15s）
+                deadline = time.time() + 15
                 while time.time() < deadline:
                     time.sleep(0.6)
                     try:
@@ -325,11 +315,10 @@ class RootDataCDPScraper:
                 time.sleep(0.5)
                 return True
 
-            # 备选：按页码 li 点击（跳转到特定页号）
-            pagers = self._page.query_selector_all("li.number, .el-pager li")
-            for pg in pagers:
+            # 备选：页码 li
+            for pg in self._page.query_selector_all("li.number, .el-pager li"):
                 if pg.inner_text().strip() == str(target):
-                    pg.click()
+                    pg.evaluate("el => el.click()")
                     time.sleep(3)
                     return True
 
@@ -348,11 +337,9 @@ class RootDataCDPScraper:
 
         self._ensure_browser()
 
-        # 导航到融资页
         self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="networkidle", timeout=30000)
         time.sleep(3)
 
-        # 登录检测
         if not self._check_login():
             if on_log:
                 on_log("[RootData] 未登录，尝试登录...")
@@ -367,7 +354,7 @@ class RootDataCDPScraper:
                 )
                 time.sleep(3)
 
-        self._dismiss_popups()
+        self._dismiss_overlays()
 
         all_projects = []
         for page_num in range(1, max_pages + 1):
@@ -376,7 +363,7 @@ class RootDataCDPScraper:
                     if on_log:
                         on_log(f"[RootData] 翻到第 {page_num} 页失败，停止")
                     break
-                self._dismiss_popups()
+                self._dismiss_overlays()
 
             projects = self._parse_current_page()
             if not projects:
@@ -390,7 +377,6 @@ class RootDataCDPScraper:
                     f"[RootData] 第 {page_num}/{max_pages} 页: "
                     f"{len(projects)} 个项目 (累计 {len(all_projects)})"
                 )
-
             time.sleep(1.0)
 
         if on_log:
