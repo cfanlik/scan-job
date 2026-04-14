@@ -388,6 +388,27 @@ class RootDataCDPScraper:
 
         self._dismiss_overlays()
 
+        # 默认只勾选 With Token
+        if on_log:
+            on_log("[RootData] 应用高级筛选: Token Issuance -> With Token")
+        try:
+            # Token Issuance 可能被折叠，需先确认它可见
+            sidebar = self._page.query_selector(".v-navigation-drawer--active, .left-filter, .filter-box")
+            if sidebar:
+                # 寻找包含 With Token 的 label
+                self._page.evaluate("""
+                    document.querySelectorAll('label').forEach(l => {
+                        if(l.innerText.includes('With Token') || l.textContent.includes('With Token')) {
+                            l.click();
+                        }
+                    });
+                """)
+                time.sleep(3)  # 等待列表重新刷新加载数据
+        except Exception as e:
+            logger.warning("[RootData] 点击 With Token 失败: %s", e)
+            if on_log:
+                on_log(f"[RootData] 点击 With Token 失败: {e}，将抓取全部")
+
         # max_pages=0 → 自动读取总页数
         if max_pages == 0:
             total_pages = self.get_total_pages()

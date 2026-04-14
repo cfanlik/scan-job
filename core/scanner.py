@@ -135,6 +135,42 @@ class Scanner:
     #  全量扫描
     # ────────────────────────────────────────
 
+    def _run_deep_discovery(self, conn, on_log) -> int:
+        """运行 RootData 纯无头深度发现提取代币符号。"""
+        # 查询那些虽然在数据库，但还没拿到 token_symbol 的项目
+        # 只要在这个系统里的，现在大概率是有代币（被With Token筛选了）
+        rows = conn.execute("""
+            SELECT p.id, p.project_name, p.rootdata_url
+            FROM projects p
+            WHERE p.id NOT IN (SELECT project_id FROM tokens WHERE token_symbol != '')
+            AND p.rootdata_url IS NOT NULL AND p.rootdata_url != ''
+            ORDER BY p.id
+        """).fetchall()
+
+        projects = [{"id": r[0], "project_name": r[1], "rootdata_url": r[2]} for r in rows]
+        if not projects:
+            if on_log:
+                on_log("[DeepDiscovery] 没有需要深度匹配的项目")
+            return 0
+
+        from core.rootdata_detail_scraper import RootDataDetailScraper
+        from core.config import get_proxy
+        
+        scraper = RootDataDetailScraper(proxy=get_proxy())
+        result = scraper.batch_scrape(projects, on_log=on_log)
+
+        found_count = 0
+        for item in result["found"]:
+            db.upsert_token(conn, item["id"], {
+                "token_symbol": item["token_symbol"],
+                "token_name":   item.get("token_name", item["token_symbol"]),
+                "cmc_listed":   0,
+                "verification_source": "rootdata_detail",
+            })
+            found_count += 1
+            
+        return found_count
+
     def run_full_scan(self, on_log=None,
                       max_rootdata_pages: int = 10,
                       enable_cmc_verify: bool = True,
@@ -197,6 +233,13 @@ class Scanner:
                     on_log("[Scanner] 阶段 ②.5 代币发现 (CMC Map 批量匹配)")
                 discovery_matched = self._run_token_discovery(conn, on_log)
                 tokens_saved += discovery_matched
+
+            # ── 2.6 RootData 详情页深度提取代币符号 ──
+            if on_log:
+                on_log("=" * 40)
+                on_log("[Scanner] 阶段 ②.6 RootData 深度代币发现 (抓取详情页)")
+            deep_discovered = self._run_deep_discovery(conn, on_log)
+            tokens_saved += deep_discovered
 
             # ── 3. CMC 核对 ──
             cmc_verified = 0
@@ -350,6 +393,13 @@ class Scanner:
                     on_log("[Scanner] 阶段 ③.5 代币发现 (CMC Map 批量匹配)")
                 discovery_matched = self._run_token_discovery(conn, on_log)
                 tokens_saved += discovery_matched
+
+            # ── 3.6 RootData 详情页深度提取代币符号 ──
+            if on_log:
+                on_log("=" * 40)
+                on_log("[Scanner] 阶段 ③.6 RootData 深度代币发现 (抓取详情页)")
+            deep_discovered = self._run_deep_discovery(conn, on_log)
+            tokens_saved += deep_discovered
 
             # ── 4. CMC 核对（仅新增代币）──
             cmc_verified = 0
