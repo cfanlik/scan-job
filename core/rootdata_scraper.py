@@ -369,7 +369,14 @@ class RootDataCDPScraper:
 
         self._ensure_browser()
 
-        self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="networkidle", timeout=30000)
+        self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="domcontentloaded", timeout=60000)
+        
+        # 显式等待核心内容或侧边栏加载完毕，而不是信赖可能僵死的 networkidle
+        try:
+            self._page.wait_for_selector(".left-filter, .filter-box, tbody tr", timeout=15000)
+        except Exception:
+            pass
+            
         time.sleep(3)
 
         if not self._check_login():
@@ -381,9 +388,13 @@ class RootDataCDPScraper:
             else:
                 self._page.goto(
                     f"{_SITE_BASE}/Fundraising",
-                    wait_until="networkidle",
-                    timeout=30000,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
                 )
+                try:
+                    self._page.wait_for_selector(".left-filter, .filter-box, tbody tr", timeout=15000)
+                except Exception:
+                    pass
                 time.sleep(3)
 
         self._dismiss_overlays()
