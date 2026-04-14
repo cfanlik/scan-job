@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目列表 — scan-job</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta21/dist/css/tabler.min.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg">
+  <div class="container-xl">
+    <a class="navbar-brand text-white" href="/dashboard">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="me-2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      scan-job
+    </a>
+    <div class="navbar-nav ms-auto">
+      <a class="nav-link" href="/dashboard">仪表盘</a>
+      <a class="nav-link active" href="/projects">项目列表</a>
+      <a class="nav-link" href="/scan">扫描管理</a>
+      <a class="nav-link" href="/settings">设置</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container-xl py-4" v-scope="ProjectsApp()" @vue:mounted="load()">
+
+  <!-- 工具栏 -->
+  <div class="card mb-3">
+    <div class="card-body py-2">
+      <div class="row g-2 align-items-center">
+        <div class="col-md-4">
+          <input type="text" class="form-control" placeholder="搜索项目名称..."
+                 v-model="search" @input="debounceLoad()">
+        </div>
+        <div class="col-md-2">
+          <select class="form-select" v-model="source" @change="load()">
+            <option value="">全部来源</option>
+            <option value="rootdata">RootData</option>
+            <option value="cryptorank">CryptoRank</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-check form-switch mb-0">
+            <input type="checkbox" class="form-check-input" v-model="notListedOnly" @change="load()">
+            <span class="form-check-label">仅未上所</span>
+          </label>
+        </div>
+        <div class="col-md-1 text-end">
+          <span class="text-muted">共 {{ total }} 条</span>
+        </div>
+        <div class="col-md-3 text-end">
+          <button class="btn btn-sm btn-primary me-1" @click="exportCSV()">📥 导出</button>
+          <button class="btn btn-sm btn-danger" @click="clearAll()" :disabled="!total">
+            🗑️ 清空全部
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 表格 -->
+  <div class="card">
+    <div class="card-body p-0">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>项目</th>
+            <th>代币</th>
+            <th>融资总额</th>
+            <th>最新轮次</th>
+            <th>标签</th>
+            <th>来源</th>
+            <th>投资方</th>
+            <th>上所状态</th>
+            <th style="width:60px">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(p, i) in projects" :key="p.id">
+            <td>{{ offset + i + 1 }}</td>
+            <td>
+              <img v-if="p.logo" :src="p.logo" class="project-logo" onerror="this.style.display='none'">
+              {{ p.project_name || '-' }}
+            </td>
+            <td><strong>{{ p.token_symbol || '-' }}</strong></td>
+            <td v-html="fmtMoney(p.total_funding)"></td>
+            <td>{{ p.latest_round || '-' }}</td>
+            <td v-html="fmtTags(p.tags)"></td>
+            <td v-html="fmtSource(p.source)"></td>
+            <td>{{ fmtInvestors(p.investors) }}</td>
+            <td v-html="fmtListed(p.cmc_listed, p.cr_traded)"></td>
+            <td>
+              <button class="btn btn-sm btn-ghost-danger p-1" @click="deleteProject(p.id, p.project_name)"
+                      title="删除" style="line-height:1">
+                ✕
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="!projects.length" class="p-4 text-center text-muted">暂无数据</div>
+    </div>
+
+    <!-- 分页 -->
+    <div class="card-footer d-flex justify-content-between align-items-center" v-if="total > limit">
+      <span class="text-muted">
+        {{ offset + 1 }}-{{ Math.min(offset + limit, total) }} / {{ total }}
+      </span>
+      <div>
+        <button class="btn btn-sm btn-outline-secondary me-1" :disabled="offset === 0"
+                @click="offset -= limit; load()">上一页</button>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="offset + limit >= total"
+                @click="offset += limit; load()">下一页</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+<script src="/static/app.js"></script>
+<script>
+function ProjectsApp() {
+  let _timer = null;
+  return {
+    projects: [],
+    total: 0,
+    offset: 0,
+    limit: 50,
+    search: '',
+    source: '',
+    notListedOnly: false,
+    async load() {
+      try {
+        let url = `/api/projects?offset=${this.offset}&limit=${this.limit}`;
+        if (this.source) url += `&source=${this.source}`;
+        if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
+        // notListedOnly → use tokens endpoint
+        if (this.notListedOnly) {
+          url = `/api/tokens?offset=${this.offset}&limit=${this.limit}&not_listed_only=true`;
+          if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
+        }
+        const res = await API.get(url);
+        this.projects = res.data || [];
+        this.total = res.total || 0;
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    debounceLoad() {
+      clearTimeout(_timer);
+      _timer = setTimeout(() => { this.offset = 0; this.load(); }, 400);
+    },
+    exportCSV() {
+      if (!this.projects.length) return;
+      const headers = ['项目', '代币', '融资总额', '轮次', '来源', '投资方', '上所'];
+      const rows = this.projects.map(p => [
+        p.project_name, p.token_symbol, p.total_funding,
+        p.latest_round, p.source, p.investors, p.cmc_listed ? '是' : '否',
+      ]);
+      const csv = '\uFEFF' + [headers, ...rows].map(r => r.join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `scan-job-projects-${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+    },
+    async deleteProject(id, name) {
+      if (!confirm(`确定删除项目「${name}」及其关联代币？`)) return;
+      try {
+        await API.delete(`/api/projects/${id}`);
+        this.load();
+      } catch (e) {
+        alert('删除失败: ' + (e.message || e));
+      }
+    },
+    async clearAll() {
+      if (!confirm('确定清空全部项目和代币数据？此操作不可撤销！')) return;
+      if (!confirm('再次确认：将删除所有扫描的数据！')) return;
+      try {
+        const res = await API.delete('/api/data/clear');
+        alert(res.message || '已清空');
+        this.load();
+      } catch (e) {
+        alert('清空失败: ' + (e.message || e));
+      }
+    },
+    fmtMoney: (n) => fmt.money(n),
+    fmtSource: (s) => fmt.sourceBadge(s),
+    fmtListed: (cmc, cr) => fmt.listedBadge(cmc, cr),
+    fmtTags: (s) => fmt.tags(s),
+    fmtInvestors: (s) => fmt.investors(s),
+  };
+}
+PetiteVue.createApp().mount();
+</script>
+</body>
+</html>

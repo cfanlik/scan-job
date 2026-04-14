@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>扫描管理 — scan-job</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta21/dist/css/tabler.min.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg">
+  <div class="container-xl">
+    <a class="navbar-brand text-white" href="/dashboard">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="me-2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      scan-job
+    </a>
+    <div class="navbar-nav ms-auto">
+      <a class="nav-link" href="/dashboard">仪表盘</a>
+      <a class="nav-link" href="/projects">项目列表</a>
+      <a class="nav-link active" href="/scan">扫描管理</a>
+      <a class="nav-link" href="/settings">设置</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container-xl py-4" v-scope="ScanApp()" @vue:mounted="init()">
+
+  <div class="row g-4">
+    <!-- 左栏: 扫描控制 -->
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-header">🚀 启动扫描</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label">RootData 最大页数</label>
+            <input type="number" class="form-control" v-model.number="params.max_rootdata_pages"
+                   min="1" max="50">
+            <small class="form-hint text-muted">每页 30 个项目 · CDP 模式（需 .env 配置账号）</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-check form-switch">
+              <input type="checkbox" class="form-check-input" v-model="params.enable_cmc_verify">
+              <span class="form-check-label">CMC 上所验证</span>
+            </label>
+          </div>
+          <button class="btn btn-primary w-100" @click="startScan()"
+                  :disabled="isRunning">
+            <span v-if="isRunning"><span class="spinner me-2"></span>扫描中...</span>
+            <span v-else>▶ 开始扫描</span>
+          </button>
+          <button class="btn btn-outline-secondary w-100 mt-2" @click="stopScan()"
+                  v-if="isRunning">⏹ 停止</button>
+        </div>
+      </div>
+
+      <!-- 扫描结果 -->
+      <div class="card mt-3" v-if="result">
+        <div class="card-header">📊 扫描结果</div>
+        <div class="card-body">
+          <table class="table table-sm mb-0">
+            <tr><td class="text-muted">状态</td>
+                <td><span :class="result.status === 'done' ? 'text-success' : 'text-danger'">{{ result.status }}</span></td></tr>
+            <tr><td class="text-muted">总项目</td><td>{{ result.total_projects }}</td></tr>
+            <tr><td class="text-muted">有代币</td><td>{{ result.funded_with_token }}</td></tr>
+            <tr><td class="text-muted">未上所</td><td class="text-warning fw-bold">{{ result.not_listed }}</td></tr>
+            <tr><td class="text-muted">CMC 核对</td><td>{{ result.cmc_verified }}</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右栏: 日志 -->
+    <div class="col-md-8">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between">
+          <span>📋 扫描日志</span>
+          <span class="text-muted" v-if="taskId">任务: {{ taskId }}</span>
+        </div>
+        <div class="card-body p-0">
+          <div class="progress-log" ref="logBox" id="logBox">
+            <div v-for="line in progress" class="line"
+                 :class="{
+                   success: line.includes('✅'),
+                   error: line.includes('❌'),
+                   info: line.includes('[Scanner]') || line.includes('==='),
+                 }">{{ line }}</div>
+            <div v-if="!progress.length" class="text-muted p-3">等待扫描启动...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 历史记录 -->
+      <div class="card mt-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>📜 扫描历史</span>
+          <button class="btn btn-sm btn-outline-danger" @click="clearLogs()"
+                  v-if="logs.length" :disabled="isRunning">
+            🗑️ 清空
+          </button>
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0" v-if="logs.length">
+            <thead><tr>
+              <th>ID</th><th>类型</th><th>状态</th>
+              <th>项目数</th><th>未上所</th><th>开始时间</th><th style="width:50px">操作</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="l in logs" :key="l.scan_id">
+                <td>{{ l.scan_id }}</td>
+                <td>{{ l.scan_type }}</td>
+                <td>
+                  <span :class="l.status === 'done' ? 'text-success' : l.status === 'error' ? 'text-danger' : ''">
+                    {{ l.status }}
+                  </span>
+                </td>
+                <td>{{ l.total_projects }}</td>
+                <td class="text-warning">{{ l.not_listed }}</td>
+                <td>{{ fmtTime(l.started_at) }}</td>
+                <td>
+                  <button class="btn btn-sm btn-ghost-danger p-1" @click="deleteLog(l.scan_id)"
+                          title="删除" style="line-height:1">✕</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="p-3 text-center text-muted">暂无历史</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+<script src="/static/app.js"></script>
+<script>
+function ScanApp() {
+  let _pollTimer = null;
+  return {
+    params: { max_rootdata_pages: 10, enable_cmc_verify: true },
+    taskId: null,
+    isRunning: false,
+    progress: [],
+    result: null,
+    logs: [],
+    async init() {
+      await this.loadLogs();
+      // 恢复进行中的任务
+      const savedId = localStorage.getItem('scan_task_id');
+      if (savedId) {
+        this.taskId = savedId;
+        this.startPolling();
+      }
+    },
+    async startScan() {
+      try {
+        this.progress = [];
+        this.result = null;
+        const res = await API.post('/api/scan/start', this.params);
+        this.taskId = res.task_id;
+        this.isRunning = true;
+        localStorage.setItem('scan_task_id', this.taskId);
+        this.startPolling();
+        toast('扫描已启动', 'success');
+      } catch (e) {
+        toast('启动失败: ' + e.message, 'error');
+      }
+    },
+    async stopScan() {
+      if (!this.taskId) return;
+      await API.post(`/api/scan/stop/${this.taskId}`);
+      this.isRunning = false;
+      this.stopPolling();
+      toast('扫描已停止', 'info');
+    },
+    startPolling() {
+      this.stopPolling();
+      _pollTimer = setInterval(() => this.pollStatus(), 2000);
+      this.pollStatus();
+    },
+    stopPolling() {
+      if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    },
+    async pollStatus() {
+      if (!this.taskId) return;
+      try {
+        const task = await API.get(`/api/scan/status/${this.taskId}`);
+        this.progress = task.progress || [];
+        this.isRunning = task.status === 'running';
+
+        // 自动滚动
+        this.$nextTick(() => {
+          const box = document.getElementById('logBox');
+          if (box) box.scrollTop = box.scrollHeight;
+        });
+
+        if (task.status !== 'running') {
+          this.stopPolling();
+          this.result = task.result;
+          localStorage.removeItem('scan_task_id');
+          await this.loadLogs();
+        }
+      } catch (e) {
+        this.stopPolling();
+        this.isRunning = false;
+        localStorage.removeItem('scan_task_id');
+      }
+    },
+    async loadLogs() {
+      try {
+        const res = await API.get('/api/scan-logs?limit=20');
+        this.logs = res.data || [];
+      } catch (e) { console.error(e); }
+    },
+    async deleteLog(scanId) {
+      if (!confirm(`删除扫描记录 ${scanId}？`)) return;
+      try {
+        await API.delete(`/api/scan-logs/${scanId}`);
+        this.logs = this.logs.filter(l => l.scan_id !== scanId);
+      } catch (e) {
+        toast('删除失败: ' + e.message, 'error');
+      }
+    },
+    async clearLogs() {
+      if (!confirm('确定清空全部扫描历史？')) return;
+      try {
+        const res = await API.delete('/api/scan-logs');
+        toast(res.message || '已清空', 'success');
+        this.logs = [];
+      } catch (e) {
+        toast('清空失败: ' + e.message, 'error');
+      }
+    },
+    fmtTime: (s) => fmt.datetime(s),
+  };
+}
+PetiteVue.createApp().mount();
+</script>
+</body>
+</html>

@@ -1,0 +1,190 @@
+/* ========== scan-job 全局样式 ========== */
+/* Tabler 深色主题覆盖 + 自定义组件 */
+
+:root {
+    --primary: #6366f1;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --bg-dark: #0f172a;
+    --bg-card: #1e293b;
+    --bg-input: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --border: #334155;
+}
+
+body {
+    background: var(--bg-dark) !important;
+    color: var(--text) !important;
+    font-family: 'Inter', -apple-system, sans-serif;
+}
+
+/* ── 导航栏 ── */
+.navbar {
+    background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%) !important;
+    border-bottom: 1px solid rgba(99,102,241,0.3);
+}
+.navbar-brand { font-weight: 700; letter-spacing: 0.5px; }
+.nav-link { color: var(--text) !important; transition: color 0.2s; }
+.nav-link:hover, .nav-link.active { color: var(--primary) !important; }
+
+/* ── 卡片 ── */
+.card {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+}
+.card-header {
+    background: transparent !important;
+    border-bottom: 1px solid var(--border) !important;
+    font-weight: 600;
+}
+
+/* ── 统计卡片 ── */
+.stat-card {
+    background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.05));
+    border: 1px solid rgba(99,102,241,0.2);
+    border-radius: 12px;
+    padding: 1.25rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(99,102,241,0.15);
+}
+.stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #818cf8, #6366f1);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.stat-card .stat-label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+.stat-card.success { border-color: rgba(16,185,129,0.3); }
+.stat-card.success .stat-value {
+    background: linear-gradient(135deg, #34d399, #10b981);
+    -webkit-background-clip: text;
+}
+.stat-card.warning { border-color: rgba(245,158,11,0.3); }
+.stat-card.warning .stat-value {
+    background: linear-gradient(135deg, #fbbf24, #f59e0b);
+    -webkit-background-clip: text;
+}
+
+/* ── 表格 ── */
+.table { color: var(--text) !important; }
+.table thead th {
+    background: rgba(99,102,241,0.1);
+    border-color: var(--border);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+.table td { border-color: var(--border); vertical-align: middle; }
+.table tbody tr:hover { background: rgba(99,102,241,0.08); }
+
+/* ── 徽章 ── */
+.badge {
+    font-weight: 500;
+    font-size: 0.72rem;
+    padding: 0.3em 0.6em;
+    border-radius: 6px;
+}
+.badge.bg-dark { background: var(--bg-input) !important; }
+
+/* ── 按钮 ── */
+.btn-primary {
+    background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
+    border: none !important;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 15px rgba(99,102,241,0.4);
+}
+
+/* ── 输入框 ── */
+.form-control, .form-select {
+    background: var(--bg-input) !important;
+    border-color: var(--border) !important;
+    color: var(--text) !important;
+}
+.form-control:focus, .form-select:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.15) !important;
+}
+
+/* ── 进度日志 ── */
+.progress-log {
+    background: #0f172a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+}
+.progress-log .line { color: var(--text-muted); }
+.progress-log .line.success { color: var(--success); }
+.progress-log .line.error { color: var(--danger); }
+.progress-log .line.info { color: #60a5fa; }
+
+/* ── Toast ── */
+.toast-custom {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    z-index: 9999;
+    opacity: 0;
+    transform: translateX(100px);
+    transition: all 0.3s ease;
+    color: white;
+}
+.toast-custom.show { opacity: 1; transform: translateX(0); }
+.toast-info { background: rgba(99,102,241,0.9); }
+.toast-success { background: rgba(16,185,129,0.9); }
+.toast-error { background: rgba(239,68,68,0.9); }
+
+/* ── Logo Icon ── */
+.project-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+/* ── 分页 ── */
+.pagination .page-item .page-link {
+    background: var(--bg-card);
+    border-color: var(--border);
+    color: var(--text);
+}
+.pagination .page-item.active .page-link {
+    background: var(--primary);
+    border-color: var(--primary);
+}
+
+/* ── 加载动画 ── */
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--text-muted);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

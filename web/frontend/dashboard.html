@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>仪表盘 — scan-job</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta21/dist/css/tabler.min.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- 导航 -->
+<nav class="navbar navbar-expand-lg">
+  <div class="container-xl">
+    <a class="navbar-brand text-white" href="/dashboard">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="me-2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      scan-job
+    </a>
+    <div class="navbar-nav ms-auto">
+      <a class="nav-link active" href="/dashboard">仪表盘</a>
+      <a class="nav-link" href="/projects">项目列表</a>
+      <a class="nav-link" href="/scan">扫描管理</a>
+      <a class="nav-link" href="/settings">设置</a>
+    </div>
+  </div>
+</nav>
+
+<!-- 内容 -->
+<div class="container-xl py-4" v-scope="DashboardApp()" @vue:mounted="init()">
+
+  <!-- 统计卡片 -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="stat-value">{{ stats.total_projects || 0 }}</div>
+        <div class="stat-label">总项目数</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card success">
+        <div class="stat-value">{{ stats.with_token || 0 }}</div>
+        <div class="stat-label">已发币项目</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card warning">
+        <div class="stat-value">{{ stats.not_listed || 0 }}</div>
+        <div class="stat-label">未上所代币</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="stat-card">
+        <div class="stat-value">{{ lastScanTime }}</div>
+        <div class="stat-label">最近扫描</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 最新未上所代币 -->
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>🔍 最新未上所代币 (Top 20)</span>
+      <a href="/projects" class="btn btn-sm btn-primary">查看全部</a>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-hover mb-0" v-if="tokens.length">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>项目</th>
+            <th>代币</th>
+            <th>融资总额</th>
+            <th>最新轮次</th>
+            <th>来源</th>
+            <th>投资方</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(t, i) in tokens" :key="t.id">
+            <td>{{ i + 1 }}</td>
+            <td>
+              <img v-if="t.logo" :src="t.logo" class="project-logo" onerror="this.style.display='none'">
+              {{ t.project_name || '-' }}
+            </td>
+            <td><strong>{{ t.token_symbol || '-' }}</strong></td>
+            <td v-html="fmtMoney(t.total_funding)"></td>
+            <td>{{ t.latest_round || '-' }}</td>
+            <td v-html="fmtSource(t.source)"></td>
+            <td>{{ fmtInvestors(t.investors) }}</td>
+            <td v-html="fmtListed(t.cmc_listed, t.cr_traded)"></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="p-4 text-center text-muted">
+        暂无数据，请先执行 <a href="/scan">扫描</a>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/petite-vue@0.4.1/dist/petite-vue.iife.js"></script>
+<script src="/static/app.js"></script>
+<script>
+function DashboardApp() {
+  return {
+    stats: {},
+    tokens: [],
+    get lastScanTime() {
+      const s = this.stats.last_scan;
+      if (!s) return '-';
+      return fmt.datetime(s.started_at);
+    },
+    async init() {
+      try {
+        this.stats = await API.get('/api/stats');
+        const res = await API.get('/api/tokens?not_listed_only=true&limit=20');
+        this.tokens = res.data || [];
+      } catch (e) {
+        console.error(e);
+      }
+    },
+    fmtMoney: (n) => fmt.money(n),
+    fmtSource: (s) => fmt.sourceBadge(s),
+    fmtListed: (cmc, cr) => fmt.listedBadge(cmc, cr),
+    fmtInvestors: (s) => fmt.investors(s),
+  };
+}
+
+PetiteVue.createApp().mount();
+</script>
+</body>
+</html>
