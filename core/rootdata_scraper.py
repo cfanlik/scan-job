@@ -47,7 +47,7 @@ class RootDataCDPScraper:
         if self._page is not None:
             return
         from playwright.sync_api import sync_playwright
-        from core.config import get_proxy
+        from .config import get_proxy
 
         self._pw = sync_playwright().start()
         
