@@ -94,25 +94,19 @@
 
       <!-- 代币发现工具 -->
       <div class="card mt-3">
-        <div class="card-header">🔍 代币发现</div>
+        <div class="card-header">🔍 独立匹配工具</div>
         <div class="card-body">
           <p class="text-muted mb-2" style="font-size:0.85rem">
-            CMC Map 匹配：下载全量币种表，本地匹配项目名→代币符号（~15秒）
+            (注: 常规扫描已默认通过 With Token 精筛全自动执行深度代币获取，此处仅用于独立或重复的快速映射匹配)
+          </p>
+          <hr/>
+          <p class="text-muted mb-2" style="font-size:0.85rem">
+            CMC Map 本地映射：下载全量币种表，针对项目名→代币符号快匹（~15秒）
           </p>
           <button class="btn btn-cyan w-100 mb-3" @click="discoverTokens()"
                   :disabled="discoverRunning">
             <span v-if="discoverRunning"><span class="spinner me-2"></span>匹配中...</span>
             <span v-else>⚡ CMC Map 快速匹配</span>
-          </button>
-
-          <hr>
-          <p class="text-muted mb-2" style="font-size:0.85rem">
-            RootData 深度匹配：逐个查询详情页 API 获取 tokenSymbol（~6h）
-          </p>
-          <button class="btn btn-warning w-100" @click="deepDiscover()"
-                  :disabled="discoverRunning">
-            <span v-if="deepRunning"><span class="spinner me-2"></span>深度匹配中...</span>
-            <span v-else>🔬 RootData 深度匹配</span>
           </button>
         </div>
       </div>
