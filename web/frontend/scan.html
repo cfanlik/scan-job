@@ -220,6 +220,15 @@ function ScanApp() {
       if (savedId) {
         this.taskId = savedId;
         this.startPolling();
+      } else {
+        try {
+          const active = await API.get('/api/scan/active-task');
+          if (active && active.task_id) {
+            this.taskId = active.task_id;
+            localStorage.setItem('scan_task_id', this.taskId);
+            this.startPolling();
+          }
+        } catch(e) {}
       }
     },
     async loadMeta() {

@@ -525,6 +525,15 @@ async def edit_project_token(project_id: int, req: TokenEditRequest):
         conn.close()
 
 
+@app.get("/api/scan/active-task")
+async def get_active_task():
+    """返回当前正在运行的一个扫描或发现任务的 ID"""
+    for tid, task in _tasks.items():
+        if task.get("status") == "running":
+            return {"task_id": tid}
+    return {"task_id": None}
+
+
 # ---------- 深度代币发现 ---------- #
 
 @app.post("/api/deep-discover")
