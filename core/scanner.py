@@ -154,7 +154,7 @@ class Scanner:
             return 0
 
         from core.rootdata_detail_scraper import RootDataDetailScraper
-        from core.config import get_proxy
+        from config import get_proxy
         
         scraper = RootDataDetailScraper(proxy=get_proxy())
         result = scraper.batch_scrape(projects, on_log=on_log)
