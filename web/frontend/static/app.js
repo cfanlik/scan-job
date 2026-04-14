@@ -22,6 +22,15 @@ const API = {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         return r.json();
     },
+    async put(path, body) {
+        const r = await fetch(path, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        return r.json();
+    },
 };
 
 const fmt = {

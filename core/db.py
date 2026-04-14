@@ -332,6 +332,22 @@ def get_scan_logs(conn: sqlite3.Connection, limit=20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_projects_without_token(conn: sqlite3.Connection, limit: int = 0) -> list[dict]:
+    """查询无关联 token 的项目列表。"""
+    sql = """
+        SELECT p.id, p.project_name, p.rootdata_url
+        FROM projects p
+        WHERE p.id NOT IN (
+            SELECT project_id FROM tokens WHERE token_symbol != '' AND token_symbol IS NOT NULL
+        )
+        ORDER BY p.id
+    """
+    if limit > 0:
+        sql += f" LIMIT {limit}"
+    rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
 if __name__ == "__main__":
     init_db()
     print(f"数据库已创建: {_DB_PATH}")

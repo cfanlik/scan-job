@@ -427,6 +427,104 @@ async def manual_verify(symbols: list[str] = None):
     return {"results": results}
 
 
+# ---------- 代币发现 ---------- #
+
+@app.post("/api/discover-tokens")
+async def discover_tokens():
+    """异步批量代币发现：下载 CMC 全量 Map 匹配无 token 的项目。"""
+    cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
+    if not cmc_key:
+        raise HTTPException(400, "CMC API Key 未配置")
+
+    _cleanup_tasks()
+
+    task_id = str(uuid.uuid4())[:8]
+    _tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "progress": [],
+        "result": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    def _run():
+        task = _tasks[task_id]
+        try:
+            from core.db import get_connection, get_projects_without_token, upsert_token
+            from core.token_discovery import TokenDiscovery
+
+            def on_log(msg):
+                _append_progress(task, msg)
+
+            conn = get_connection()
+            projects = get_projects_without_token(conn)
+            on_log(f"[Discovery] 待匹配项目: {len(projects)}")
+
+            if not projects:
+                on_log("[Discovery] 所有项目已有代币，无需匹配")
+                task["result"] = {"matched": 0, "unmatched": 0}
+                task["status"] = "done"
+                return
+
+            proxy = get_proxy()
+            discovery = TokenDiscovery(cmc_api_key=cmc_key, proxy=proxy)
+            result = discovery.batch_discover(projects, on_log=on_log)
+
+            # 入库匹配结果
+            matched_count = 0
+            for m in result["matched"]:
+                upsert_token(conn, m["id"], {
+                    "token_symbol": m["symbol"],
+                    "token_name":   m["cmc_name"],
+                    "cmc_listed":   1,
+                    "verification_source": f"cmc_map_{m['match_method']}",
+                })
+                matched_count += 1
+
+            conn.close()
+            on_log(f"[Discovery] 入库完成: {matched_count} 个代币")
+
+            task["result"] = result["stats"]
+            task["status"] = "done"
+
+        except Exception as e:
+            logger.exception("[Discovery] 任务失败")
+            task["status"] = "error"
+            task["result"] = {"error": str(e)}
+            _append_progress(task, f"失败: {e}")
+        finally:
+            task["finished_at"] = datetime.now().isoformat()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "running"}
+
+
+class TokenEditRequest(BaseModel):
+    token_symbol: str
+
+
+@app.put("/api/projects/{project_id}/token")
+async def edit_project_token(project_id: int, req: TokenEditRequest):
+    """手动设置项目的代币符号。"""
+    from core.db import get_connection, upsert_token
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "项目不存在")
+
+        upsert_token(conn, project_id, {
+            "token_symbol": req.token_symbol.upper(),
+            "token_name":   req.token_symbol.upper(),
+            "cmc_listed":   0,
+            "verification_source": "manual",
+        })
+        return {"ok": True, "message": f"项目 {project_id} 代币已设为 {req.token_symbol.upper()}"}
+    finally:
+        conn.close()
+
+
 # ---------- 扫描历史 ---------- #
 
 @app.get("/api/scan-logs")

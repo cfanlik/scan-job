@@ -90,7 +90,13 @@
               <img v-if="p.logo" :src="p.logo" class="project-logo" onerror="this.style.display='none'">
               {{ p.project_name || '-' }}
             </td>
-            <td><strong>{{ p.token_symbol || '-' }}</strong></td>
+            <td>
+              <strong>{{ p.token_symbol || '-' }}</strong>
+              <button v-if="!p.token_symbol" class="btn btn-sm btn-ghost-primary p-0 ms-1"
+                      @click="editToken(p.id, p.project_name)" title="设置代币" style="line-height:1;font-size:0.7rem">
+                ✏️
+              </button>
+            </td>
             <td v-html="fmtMoney(p.total_funding)"></td>
             <td>{{ p.latest_round || '-' }}</td>
             <td v-html="fmtTags(p.tags)"></td>
@@ -101,6 +107,10 @@
               <button class="btn btn-sm btn-ghost-danger p-1" @click="deleteProject(p.id, p.project_name)"
                       title="删除" style="line-height:1">
                 ✕
+              </button>
+              <button class="btn btn-sm btn-ghost-primary p-1 ms-1" @click="editToken(p.id, p.project_name)"
+                      title="编辑代币" style="line-height:1;font-size:0.7rem">
+                ✏️
               </button>
             </td>
           </tr>
@@ -191,6 +201,16 @@ function ProjectsApp() {
         this.load();
       } catch (e) {
         alert('清空失败: ' + (e.message || e));
+      }
+    },
+    async editToken(id, name) {
+      const symbol = prompt(`设置「${name}」的代币符号:`);
+      if (!symbol) return;
+      try {
+        await API.put(`/api/projects/${id}/token`, { token_symbol: symbol.trim() });
+        this.load();
+      } catch (e) {
+        alert('设置失败: ' + (e.message || e));
       }
     },
     fmtMoney: (n) => fmt.money(n),

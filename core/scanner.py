@@ -98,6 +98,40 @@ class Scanner:
         return total_saved, tokens_saved
 
     # ────────────────────────────────────────
+    #  内部：代币发现
+    # ────────────────────────────────────────
+
+    def _run_token_discovery(self, conn, on_log=None) -> int:
+        """对 DB 中无 token 的项目执行 CMC Map 本地匹配，返回新发现数量。"""
+        from core.token_discovery import TokenDiscovery
+
+        projects = db.get_projects_without_token(conn)
+        if not projects:
+            if on_log:
+                on_log("[Discovery] 所有项目已有代币信息，跳过")
+            return 0
+
+        if on_log:
+            on_log(f"[Discovery] {len(projects)} 个项目待匹配")
+
+        discovery = TokenDiscovery(cmc_api_key=self.cmc_api_key, proxy=self.proxy)
+        result = discovery.batch_discover(projects, on_log=on_log)
+
+        matched_count = 0
+        for m in result["matched"]:
+            db.upsert_token(conn, m["id"], {
+                "token_symbol": m["symbol"],
+                "token_name":   m["cmc_name"],
+                "cmc_listed":   1,
+                "verification_source": f"cmc_map_{m['match_method']}",
+            })
+            matched_count += 1
+
+        if on_log:
+            on_log(f"[Discovery] 入库 {matched_count} 个代币")
+        return matched_count
+
+    # ────────────────────────────────────────
     #  全量扫描
     # ────────────────────────────────────────
 
@@ -154,6 +188,15 @@ class Scanner:
                 on_log("=" * 40)
                 on_log("[Scanner] 阶段 ② 去重 + 入库")
             total_saved, tokens_saved = self._save_projects(conn, projects, on_log)
+
+            # ── 2.5 代币发现（CMC Map 本地匹配）──
+            discovery_matched = 0
+            if self.cmc_api_key:
+                if on_log:
+                    on_log("=" * 40)
+                    on_log("[Scanner] 阶段 ②.5 代币发现 (CMC Map 批量匹配)")
+                discovery_matched = self._run_token_discovery(conn, on_log)
+                tokens_saved += discovery_matched
 
             # ── 3. CMC 核对 ──
             cmc_verified = 0
@@ -298,6 +341,15 @@ class Scanner:
             else:
                 if on_log:
                     on_log("[Scanner] 无新增项目，跳过入库")
+
+            # ── 3.5 代币发现（CMC Map 本地匹配）──
+            discovery_matched = 0
+            if self.cmc_api_key and total_saved > 0:
+                if on_log:
+                    on_log("=" * 40)
+                    on_log("[Scanner] 阶段 ③.5 代币发现 (CMC Map 批量匹配)")
+                discovery_matched = self._run_token_discovery(conn, on_log)
+                tokens_saved += discovery_matched
 
             # ── 4. CMC 核对（仅新增代币）──
             cmc_verified = 0
