@@ -1,12 +1,12 @@
 """
-RootData 融资数据爬虫 (DrissionPage CDP 模式)
+RootData 融资数据爬虫 (Playwright 无头模式)
 
 架构:
-  DrissionPage 连接桌面 Chrome → 登录 cn.rootdata.com → DOM 提取融资列表 → 分页翻页
-  登录状态由桌面 Chrome 保持，首次登录后后续免登录
+  playwright Chromium 无头 → 登录 cn.rootdata.com → DOM 提取融资列表 → 分页翻页
+  兼容 Linux VPS 无桌面环境（原 DrissionPage CDP 方案已废弃）
 
 数据流:
-  1. CDP 检测登录态 → 未登录则自动登录
+  1. 启动无头 Chromium → 检测登录态 → 未登录则自动登录
   2. 导航 /Fundraising → 解析渲染后的 DOM 表格
   3. 翻页采集 → 项目归一化输出
   4. 去重合并进 scanner 流程
@@ -18,18 +18,22 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 
-logger = logging.getLogger("rootdata-cdp")
+logger = logging.getLogger("rootdata-pw")
 
 _SITE_BASE = "https://cn.rootdata.com"
 
 
 class RootDataCDPScraper:
-    """RootData DrissionPage CDP 爬虫。"""
+    """RootData Playwright 无头爬虫（接口与原 DrissionPage 版保持一致）。"""
 
     def __init__(self, email: str = "", password: str = ""):
         self.email = email or os.environ.get("ROOTDATA_EMAIL", "")
         self.password = password or os.environ.get("ROOTDATA_PASSWORD", "")
+        self._pw = None       # playwright 实例
+        self._browser = None
+        self._context = None
         self._page = None
 
     # ────────────────────────────────────────
@@ -39,21 +43,46 @@ class RootDataCDPScraper:
     def _ensure_browser(self):
         if self._page is not None:
             return
-        from DrissionPage import ChromiumPage, ChromiumOptions
-        co = ChromiumOptions()
-        co.set_argument('--no-first-run')
-        self._page = ChromiumPage(addr_or_opts=co)
+        from playwright.sync_api import sync_playwright
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--disable-extensions",
+            ],
+        )
+        self._context = self._browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1440, "height": 900},
+            locale="zh-CN",
+        )
+        self._page = self._context.new_page()
 
     def _check_login(self) -> bool:
-        """登录页 URL 判断 + 按钮检测."""
-        if '/login' in (self._page.url or ''):
+        """URL 判断 + 按钮检测."""
+        url = self._page.url or ""
+        if "/login" in url:
             return False
-        login_btn = self._page.ele('text:登录', timeout=2)
-        # 排除导航栏上的"登录"链接（已登录时仍可能残留）
-        if login_btn:
-            href = login_btn.attr('href') or ''
-            if '/login' in href:
+        try:
+            # 若有"退出"按钮说明已登录
+            logout = self._page.query_selector("text=退出")
+            if logout:
+                return True
+            # 若有指向 /login 的"登录"链接则未登录
+            login_link = self._page.query_selector("a[href*='/login']")
+            if login_link:
                 return False
+        except Exception:
+            pass
         return True
 
     def _do_login(self, on_log=None) -> bool:
@@ -65,45 +94,51 @@ class RootDataCDPScraper:
         if on_log:
             on_log("[RootData] 执行登录...")
 
-        self._page.get(f"{_SITE_BASE}/login")
-        time.sleep(3)
+        self._page.goto(f"{_SITE_BASE}/login", wait_until="networkidle", timeout=30000)
+        time.sleep(2)
 
-        inputs = self._page.eles('tag:input')
+        inputs = self._page.query_selector_all("input")
         if len(inputs) < 2:
             if on_log:
                 on_log("[RootData] 登录表单未找到")
             return False
 
         # input[0]=邮箱, input[1]=密码
-        inputs[0].clear()
-        inputs[0].input(self.email)
+        inputs[0].fill(self.email)
         time.sleep(0.3)
-        inputs[1].clear()
-        inputs[1].input(self.password)
+        inputs[1].fill(self.password)
         time.sleep(0.3)
 
         # 点击"登录"按钮
-        for btn in self._page.eles('tag:button'):
-            if btn.text and btn.text.strip() == '登录':
+        for btn in self._page.query_selector_all("button"):
+            txt = btn.inner_text().strip()
+            if txt == "登录":
                 btn.click()
                 break
-        time.sleep(5)
 
-        success = '/login' not in (self._page.url or '')
+        try:
+            self._page.wait_for_url(
+                lambda url: "/login" not in url, timeout=10000
+            )
+        except Exception:
+            pass
+
+        time.sleep(2)
+        success = "/login" not in (self._page.url or "")
         if on_log:
             on_log(f"[RootData] 登录{'成功' if success else '失败'}")
         return success
 
     def _dismiss_popups(self):
         """关闭常见弹窗."""
-        try:
-            for text in ['稍后', '稍后再说', '关闭', '我知道了']:
-                btn = self._page.ele(f'text:{text}', timeout=0.5)
-                if btn:
+        for text in ["稍后", "稍后再说", "关闭", "我知道了"]:
+            try:
+                btn = self._page.query_selector(f"text={text}")
+                if btn and btn.is_visible():
                     btn.click()
                     time.sleep(0.3)
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     # ────────────────────────────────────────
     #  数据提取
@@ -111,108 +146,116 @@ class RootDataCDPScraper:
 
     def _parse_current_page(self) -> list[dict]:
         """从当前渲染的 DOM 表格 (<tr>) 提取融资项目列表.
-        
-        表格列结构 (从 DOM 分析):
+
+        表格列结构:
           td[0]: 项目名 + 描述 + logo
-          td[1]: 轮次 (种子/Pre-Seed/Series A 等)
-          td[2]: 金额 (1500 万美元)
+          td[1]: 轮次
+          td[2]: 金额
           td[3]: 估值
-          td[4]: 日期 (04-10)
-          td[5]: 投资方
+          td[4]: 日期
+          td[5+]: 投资方
         """
         projects = []
-        rows = self._page.eles('css:table.b-table tbody tr')
-        if not rows:
-            rows = self._page.eles('css:tbody tr')
+
+        # 等待表格渲染
+        try:
+            self._page.wait_for_selector("tbody tr", timeout=10000)
+        except Exception:
+            return projects
+
+        rows = self._page.query_selector_all("tbody tr")
 
         for row in rows:
             try:
-                tds = row.eles('tag:td')
+                tds = row.query_selector_all("td")
                 if len(tds) < 4:
                     continue
 
                 td0 = tds[0]
 
-                # ── td[0]: 项目名 + href + logo + 描述 ──
-                # 结构: <a href="/Projects/detail/X"><img alt="X"></a>
-                #        <div class="name"><span>X 描述</span><span>X</span></div>
-                link = td0.ele('css:a[href*="/Projects/detail/"]', timeout=0.3)
+                # ── td[0]: 项目名 + href + logo ──
+                link = td0.query_selector("a[href*='/Projects/detail/']")
                 if not link:
                     continue
-                href = link.attr('href') or ''
-                if '/Projects/detail/' not in href:
+                href = link.get_attribute("href") or ""
+                if "/Projects/detail/" not in href:
                     continue
 
-                # 项目名: div.name 内第二个 span（纯名称）
+                # 项目名
                 name = ""
                 desc = ""
-                name_div = td0.ele('css:div.name', timeout=0.3)
+                name_div = td0.query_selector("div.name")
                 if name_div:
-                    spans = name_div.eles('tag:span')
+                    spans = name_div.query_selector_all("span")
                     if len(spans) >= 2:
-                        name = spans[-1].text.strip()  # 最后一个 span = 纯名称
-                        desc = spans[0].text.strip()    # 第一个 span = 名称+描述
+                        name = spans[-1].inner_text().strip()
+                        desc = spans[0].inner_text().strip()
                     elif spans:
-                        name = spans[0].text.strip()
+                        name = spans[0].inner_text().strip()
 
-                # 降级: 从 img alt 取名
+                # 降级: img alt
                 if not name:
-                    img = link.ele('tag:img', timeout=0.2)
+                    img = link.query_selector("img")
                     if img:
-                        name = img.attr('alt') or ''
+                        name = img.get_attribute("alt") or ""
 
                 if not name:
                     continue
 
-                # 描述: 去掉项目名部分
+                # 描述清洗
                 if desc and name in desc:
-                    desc = desc.replace(name, '', 1).strip()
+                    desc = desc.replace(name, "", 1).strip()
 
                 # Logo
                 logo = ""
                 try:
-                    img = td0.ele('tag:img', timeout=0.2)
+                    img = td0.query_selector("img")
                     if img:
-                        logo = img.attr('src') or ""
+                        logo = img.get_attribute("src") or ""
                 except Exception:
                     pass
 
                 # ── td[1]: 轮次 ──
-                round_text = tds[1].text.strip() if len(tds) > 1 else ""
+                round_text = tds[1].inner_text().strip() if len(tds) > 1 else ""
 
                 # ── td[2]: 金额 ──
-                amount_text = tds[2].text.strip() if len(tds) > 2 else ""
+                amount_text = tds[2].inner_text().strip() if len(tds) > 2 else ""
 
                 # ── td[4]: 日期 ──
-                date_text = tds[4].text.strip() if len(tds) > 4 else ""
+                date_text = tds[4].inner_text().strip() if len(tds) > 4 else ""
 
                 # ── td[6]: 投资方 ──
                 investors = []
                 if len(tds) > 6:
                     inv_td = tds[6]
-                    inv_links = inv_td.eles('tag:a')
+                    inv_links = inv_td.query_selector_all("a")
                     if inv_links:
                         for il in inv_links:
-                            t = il.text.strip()
-                            if t and t != '--' and not t.startswith('+'):
+                            t = il.inner_text().strip()
+                            if t and t != "--" and not t.startswith("+"):
                                 investors.append(t)
-                    elif inv_td.text.strip() and inv_td.text.strip() != '--':
-                        # 降级: 纯文本按换行拆分
-                        for part in inv_td.text.strip().replace('\n', ',').split(','):
-                            part = part.strip()
-                            if part and part != '--' and not part.startswith('+'):
-                                investors.append(part)
+                    else:
+                        raw = inv_td.inner_text().strip()
+                        if raw and raw != "--":
+                            for part in raw.replace("\n", ",").split(","):
+                                part = part.strip()
+                                if part and part != "--" and not part.startswith("+"):
+                                    investors.append(part)
 
                 proj = {
                     "project_name": name,
                     "source": "rootdata",
-                    "rootdata_url": href if href.startswith('http') else f"{_SITE_BASE}{href}",
+                    "rootdata_url": (
+                        href if href.startswith("http") else f"{_SITE_BASE}{href}"
+                    ),
                     "total_funding": self._parse_amount(amount_text),
                     "latest_round": self._clean_round(round_text),
                     "latest_round_date": self._parse_date(date_text),
                     "description": desc[:500],
                     "tags": "[]",
-                    "investors": json.dumps(investors, ensure_ascii=False) if investors else "[]",
+                    "investors": (
+                        json.dumps(investors, ensure_ascii=False) if investors else "[]"
+                    ),
                     "token_symbol": "",
                     "logo": logo,
                 }
@@ -225,33 +268,31 @@ class RootDataCDPScraper:
     @staticmethod
     def _parse_amount(text: str):
         """解析金额: '1500 万美元', '1.2 亿美元', '$50M', '--'."""
-        if not text or text.strip() in ('--', 'N/A', ''):
+        if not text or text.strip() in ("--", "N/A", ""):
             return None
-        m = re.search(r'(\d+(?:\.\d+)?)\s*(亿|万|千万|百万|M|B)?', text)
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(亿|万|千万|百万|M|B)?", text)
         if not m:
             return None
         val = float(m.group(1))
         unit = m.group(2) or ""
-        mul = {"亿": 1e8, "万": 1e4, "千万": 1e7, "百万": 1e6, "M": 1e6, "B": 1e9}.get(unit, 1)
+        mul = {
+            "亿": 1e8, "万": 1e4, "千万": 1e7, "百万": 1e6, "M": 1e6, "B": 1e9
+        }.get(unit, 1)
         val *= mul
         return val if val >= 1000 else None
 
     @staticmethod
     def _clean_round(text: str) -> str:
-        """清洗轮次: '种子轮', 'Pre-Seed', '--' → 归一化."""
-        if not text or text.strip() in ('--', 'N/A', ''):
+        if not text or text.strip() in ("--", "N/A", ""):
             return ""
         return text.strip()
 
     @staticmethod
     def _parse_date(text: str) -> str:
-        """解析日期: '04-10', '2026-04-10' → 标准格式."""
-        if not text or text.strip() in ('--', 'N/A', ''):
+        if not text or text.strip() in ("--", "N/A", ""):
             return ""
         text = text.strip()
-        # 补全年份
-        if re.match(r'^\d{2}-\d{2}$', text):
-            from datetime import datetime
+        if re.match(r"^\d{2}-\d{2}$", text):
             year = datetime.now().year
             return f"{year}-{text}"
         return text
@@ -259,16 +300,15 @@ class RootDataCDPScraper:
     def _go_next_page(self, target: int) -> bool:
         """点击分页器翻到指定页."""
         try:
-            # ElementUI 分页器: li.number
-            pagers = self._page.eles('css:li.number, .el-pager li')
+            pagers = self._page.query_selector_all("li.number, .el-pager li")
             for pg in pagers:
-                if pg.text.strip() == str(target):
+                if pg.inner_text().strip() == str(target):
                     pg.click()
                     time.sleep(3)
                     return True
 
             # 备选: btn-next
-            next_btn = self._page.ele('css:button.btn-next, li.btn-next', timeout=1)
+            next_btn = self._page.query_selector("button.btn-next, li.btn-next")
             if next_btn:
                 next_btn.click()
                 time.sleep(3)
@@ -284,13 +324,13 @@ class RootDataCDPScraper:
     def fetch_all_pages(self, max_pages: int = 10, on_log=None) -> list[dict]:
         """采集融资项目列表（多页）。"""
         if on_log:
-            on_log("[RootData] DrissionPage CDP 启动...")
+            on_log("[RootData] Playwright 无头模式启动...")
 
         self._ensure_browser()
 
         # 导航到融资页
-        self._page.get(f"{_SITE_BASE}/Fundraising")
-        time.sleep(4)
+        self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="networkidle", timeout=30000)
+        time.sleep(3)
 
         # 登录检测
         if not self._check_login():
@@ -300,8 +340,12 @@ class RootDataCDPScraper:
                 if on_log:
                     on_log("[RootData] 登录失败，尝试未登录采集")
             else:
-                self._page.get(f"{_SITE_BASE}/Fundraising")
-                time.sleep(4)
+                self._page.goto(
+                    f"{_SITE_BASE}/Fundraising",
+                    wait_until="networkidle",
+                    timeout=30000,
+                )
+                time.sleep(3)
 
         self._dismiss_popups()
 
@@ -322,8 +366,10 @@ class RootDataCDPScraper:
 
             all_projects.extend(projects)
             if on_log:
-                on_log(f"[RootData] 第 {page_num}/{max_pages} 页: "
-                       f"{len(projects)} 个项目 (累计 {len(all_projects)})")
+                on_log(
+                    f"[RootData] 第 {page_num}/{max_pages} 页: "
+                    f"{len(projects)} 个项目 (累计 {len(all_projects)})"
+                )
 
             time.sleep(1.5)
 
@@ -333,5 +379,15 @@ class RootDataCDPScraper:
         return all_projects
 
     def close(self):
-        """关闭浏览器连接（不关闭桌面 Chrome）."""
-        self._page = None
+        """关闭浏览器。"""
+        try:
+            if self._browser:
+                self._browser.close()
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        finally:
+            self._page = None
+            self._browser = None
+            self._pw = None

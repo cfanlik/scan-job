@@ -44,6 +44,18 @@ do_start() {
         echo "  [SETUP] 依赖安装完成"
     fi
 
+    # -- 检查/安装 playwright 浏览器内核 --
+    if ! python3 -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); p.stop()" 2>/dev/null; then
+        echo "  [SETUP] 安装 playwright..."
+        pip3 install playwright >> logs/install.log 2>&1
+    fi
+    if [ ! -d "$HOME/.cache/ms-playwright" ] || [ -z "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]; then
+        echo "  [SETUP] 安装 Chromium 内核 (首次约需 2 分钟)..."
+        python3 -m playwright install chromium >> logs/install.log 2>&1
+        python3 -m playwright install-deps chromium >> logs/install.log 2>&1 || true
+        echo "  [SETUP] Chromium 安装完成"
+    fi
+
     echo "[START] Backend :3600 ..."
     nohup python3 web/server.py >> logs/backend.log 2>&1 &
     echo "  PID: $!"
