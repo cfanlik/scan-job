@@ -36,18 +36,52 @@
       <div class="card">
         <div class="card-header">🚀 启动扫描</div>
         <div class="card-body">
+
+          <!-- 扫描模式 -->
           <div class="mb-3">
-            <label class="form-label">RootData 最大页数</label>
-            <input type="number" class="form-control" v-model.number="params.max_rootdata_pages"
-                   min="1" max="50">
-            <small class="form-hint text-muted">每页 30 个项目 · CDP 模式（需 .env 配置账号）</small>
+            <label class="form-label fw-semibold">扫描模式</label>
+            <div class="d-flex flex-column gap-2">
+              <label class="form-check">
+                <input type="radio" class="form-check-input" v-model="params.scan_mode" value="auto">
+                <span class="form-check-label">
+                  <span class="fw-medium">自动模式</span>
+                  <small class="d-block text-muted">DB 为空→全量 / 有数据→增量 <span class="badge bg-green-lt ms-1">推荐</span></small>
+                </span>
+              </label>
+              <label class="form-check">
+                <input type="radio" class="form-check-input" v-model="params.scan_mode" value="incremental">
+                <span class="form-check-label">
+                  <span class="fw-medium">增量扫描</span>
+                  <small class="d-block text-muted">仅采集新增，遇已知项目自动停止</small>
+                </span>
+              </label>
+              <label class="form-check">
+                <input type="radio" class="form-check-input" v-model="params.scan_mode" value="full">
+                <span class="form-check-label">
+                  <span class="fw-medium">全量扫描</span>
+                  <small class="d-block text-muted">采集全部页（0=自动读取总页数）</small>
+                </span>
+              </label>
+            </div>
           </div>
+
+          <!-- 页数限制（仅全量/增量显示） -->
+          <div class="mb-3">
+            <label class="form-label">最大页数 <small class="text-muted">(全量填 0 = 自动)</small></label>
+            <input type="number" class="form-control" v-model.number="params.max_rootdata_pages"
+                   min="0" max="400">
+            <small class="form-hint text-muted">
+              每页 30 条 · 当前 RootData 共约 {{ meta.total_pages }} 页<span v-if="meta.last_full_scan_at"> · 上次全量: {{ fmtTime(meta.last_full_scan_at) }}</span>
+            </small>
+          </div>
+
           <div class="mb-3">
             <label class="form-check form-switch">
               <input type="checkbox" class="form-check-input" v-model="params.enable_cmc_verify">
               <span class="form-check-label">CMC 上所验证</span>
             </label>
           </div>
+
           <button class="btn btn-primary w-100" @click="startScan()"
                   :disabled="isRunning">
             <span v-if="isRunning"><span class="spinner me-2"></span>扫描中...</span>
@@ -65,7 +99,8 @@
           <table class="table table-sm mb-0">
             <tr><td class="text-muted">状态</td>
                 <td><span :class="result.status === 'done' ? 'text-success' : 'text-danger'">{{ result.status }}</span></td></tr>
-            <tr><td class="text-muted">总项目</td><td>{{ result.total_projects }}</td></tr>
+            <tr><td class="text-muted">DB 总项目</td><td>{{ result.total_projects }}</td></tr>
+            <tr><td class="text-muted">本次新增</td><td class="text-cyan fw-bold">{{ result.new_projects ?? result.total_projects }}</td></tr>
             <tr><td class="text-muted">有代币</td><td>{{ result.funded_with_token }}</td></tr>
             <tr><td class="text-muted">未上所</td><td class="text-warning fw-bold">{{ result.not_listed }}</td></tr>
             <tr><td class="text-muted">CMC 核对</td><td>{{ result.cmc_verified }}</td></tr>
@@ -107,18 +142,19 @@
           <table class="table table-sm mb-0" v-if="logs.length">
             <thead><tr>
               <th>ID</th><th>类型</th><th>状态</th>
-              <th>项目数</th><th>未上所</th><th>开始时间</th><th style="width:50px">操作</th>
+              <th>总项目</th><th>新增</th><th>未上所</th><th>开始时间</th><th style="width:50px">操作</th>
             </tr></thead>
             <tbody>
               <tr v-for="l in logs" :key="l.scan_id">
                 <td>{{ l.scan_id }}</td>
-                <td>{{ l.scan_type }}</td>
+                <td><span :class="l.scan_type==='incremental' ? 'text-cyan' : 'text-blue'">{{ l.scan_type }}</span></td>
                 <td>
                   <span :class="l.status === 'done' ? 'text-success' : l.status === 'error' ? 'text-danger' : ''">
                     {{ l.status }}
                   </span>
                 </td>
                 <td>{{ l.total_projects }}</td>
+                <td class="text-cyan fw-semibold">{{ l.new_projects ?? '-' }}</td>
                 <td class="text-warning">{{ l.not_listed }}</td>
                 <td>{{ fmtTime(l.started_at) }}</td>
                 <td>
@@ -142,7 +178,8 @@
 function ScanApp() {
   let _pollTimer = null;
   return {
-    params: { max_rootdata_pages: 10, enable_cmc_verify: true },
+    params: { max_rootdata_pages: 10, enable_cmc_verify: true, scan_mode: 'auto' },
+    meta: { total_pages: '?', last_full_scan_at: null, last_incremental_at: null, can_incremental: false },
     taskId: null,
     isRunning: false,
     progress: [],
@@ -150,12 +187,22 @@ function ScanApp() {
     logs: [],
     async init() {
       await this.loadLogs();
+      await this.loadMeta();
       // 恢复进行中的任务
       const savedId = localStorage.getItem('scan_task_id');
       if (savedId) {
         this.taskId = savedId;
         this.startPolling();
       }
+    },
+    async loadMeta() {
+      try {
+        const m = await API.get('/api/scan/meta');
+        this.meta = {
+          ...m,
+          total_pages: m.total_projects ? Math.ceil(m.total_projects / 30) + '+' : '?'
+        };
+      } catch(e) { console.error(e); }
     },
     async startScan() {
       try {

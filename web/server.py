@@ -112,8 +112,9 @@ app.add_middleware(
 # ---------- Models ---------- #
 
 class ScanRequest(BaseModel):
-    max_rootdata_pages: int = 10
+    max_rootdata_pages: int = 10   # 0 = 自动读取总页数（全量）
     enable_cmc_verify: bool = True
+    scan_mode: str = "auto"        # full | incremental | auto
 
 
 class SettingsUpdate(BaseModel):
@@ -211,19 +212,37 @@ async def scan_start(req: ScanRequest):
         task = _tasks[task_id]
         try:
             from core.scanner import Scanner
+            from core.db import get_connection, get_scan_meta
 
             def on_log(msg):
                 _append_progress(task, msg)
 
-            proxy = get_proxy()
+            proxy   = get_proxy()
             cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
 
             scanner = Scanner(proxy=proxy, cmc_api_key=cmc_key)
-            result = scanner.run_full_scan(
-                on_log=on_log,
-                max_rootdata_pages=req.max_rootdata_pages,
-                enable_cmc_verify=req.enable_cmc_verify,
-            )
+
+            # 决定扫描模式
+            mode = req.scan_mode
+            if mode == "auto":
+                conn_tmp = get_connection()
+                meta = get_scan_meta(conn_tmp)
+                conn_tmp.close()
+                mode = "incremental" if meta["can_incremental"] else "full"
+                on_log(f"[Scanner] auto 模式 → {mode}")
+
+            if mode == "incremental":
+                result = scanner.run_incremental_scan(
+                    on_log=on_log,
+                    max_rootdata_pages=req.max_rootdata_pages or 50,
+                    enable_cmc_verify=req.enable_cmc_verify,
+                )
+            else:
+                result = scanner.run_full_scan(
+                    on_log=on_log,
+                    max_rootdata_pages=req.max_rootdata_pages,
+                    enable_cmc_verify=req.enable_cmc_verify,
+                )
 
             task["result"] = result
             task["status"] = result.get("status", "done")
@@ -240,6 +259,17 @@ async def scan_start(req: ScanRequest):
     t.start()
 
     return {"task_id": task_id, "status": "running"}
+
+
+@app.get("/api/scan/meta")
+async def scan_meta():
+    """返回扫描元信息：上次全量/增量时间、是否可增量扫描。"""
+    from core.db import get_connection, get_scan_meta
+    conn = get_connection()
+    try:
+        return get_scan_meta(conn)
+    finally:
+        conn.close()
 
 
 @app.get("/api/scan/status/{task_id}")

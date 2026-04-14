@@ -9,16 +9,19 @@ RootData 融资数据爬虫 (Playwright 无头模式)
   1. 启动无头 Chromium → 检测登录态 → 未登录则自动登录
   2. 导航 /Fundraising → 解析渲染后的 DOM 表格
   3. JS click 绕过遮罩 + btn-next + 内容变化检测翻页
-  4. 去重合并进 scanner 流程
+  4. 支持 get_total_pages() 自动读取总页数
+  5. 支持 early_stop_fn 每页回调，用于增量扫描提前终止
 
-采集频率: 一天一次
+采集频率: 全量首次 / 增量每日一次
 """
 import json
 import logging
+import math
 import os
 import re
 import time
 from datetime import datetime
+from typing import Callable, Optional
 
 logger = logging.getLogger("rootdata-pw")
 
@@ -29,12 +32,12 @@ class RootDataCDPScraper:
     """RootData Playwright 无头爬虫（接口与原 DrissionPage 版保持一致）。"""
 
     def __init__(self, email: str = "", password: str = ""):
-        self.email = email or os.environ.get("ROOTDATA_EMAIL", "")
+        self.email    = email    or os.environ.get("ROOTDATA_EMAIL", "")
         self.password = password or os.environ.get("ROOTDATA_PASSWORD", "")
-        self._pw = None
+        self._pw      = None
         self._browser = None
         self._context = None
-        self._page = None
+        self._page    = None
 
     # ────────────────────────────────────────
     #  浏览器管理
@@ -72,11 +75,9 @@ class RootDataCDPScraper:
         if "/login" in url:
             return False
         try:
-            logout = self._page.query_selector("text=退出登录")
-            if logout:
+            if self._page.query_selector("text=退出登录"):
                 return True
-            login_link = self._page.query_selector("a[href*='/login']")
-            if login_link:
+            if self._page.query_selector("a[href*='/login']"):
                 return False
         except Exception:
             pass
@@ -121,10 +122,9 @@ class RootDataCDPScraper:
         return success
 
     def _dismiss_overlays(self):
-        """用 JS 强制隐藏遮罩层，避免遮挡点击。"""
+        """JS 强制隐藏遮罩层，避免遮挡点击。"""
         try:
             self._page.evaluate("""
-                // 隐藏弹窗遮罩背景
                 document.querySelectorAll(
                     'div.bg[data-v-453a4645], .v-overlay, .v-dialog__overlay, ' +
                     '.modal-backdrop, .el-overlay'
@@ -136,7 +136,6 @@ class RootDataCDPScraper:
             """)
         except Exception:
             pass
-        # 文字关闭按钮
         for text in ["稍后", "稍后再说", "关闭", "我知道了"]:
             try:
                 btn = self._page.query_selector(f"text={text}")
@@ -145,6 +144,29 @@ class RootDataCDPScraper:
                     time.sleep(0.2)
             except Exception:
                 pass
+
+    # ────────────────────────────────────────
+    #  分页信息
+    # ────────────────────────────────────────
+
+    def get_total_pages(self) -> int:
+        """从分页器读取总条数并计算总页数。
+        分页器 HTML: <span class="el-pagination__total">共 9495 条</span>
+        """
+        PER_PAGE = 30
+        try:
+            el = self._page.query_selector(".el-pagination__total")
+            if el:
+                text = el.inner_text()  # "共 9495 条"
+                m = re.search(r"(\d+)", text.replace(",", ""))
+                if m:
+                    total_items = int(m.group(1))
+                    pages = math.ceil(total_items / PER_PAGE)
+                    logger.info("[RootData] 总条数=%d → 总页数=%d", total_items, pages)
+                    return pages
+        except Exception as e:
+            logger.warning("[RootData] get_total_pages 失败: %s", e)
+        return 0
 
     # ────────────────────────────────────────
     #  数据提取
@@ -167,14 +189,13 @@ class RootDataCDPScraper:
         except Exception:
             return projects
 
-        rows = self._page.query_selector_all("tbody tr")
-        for row in rows:
+        for row in self._page.query_selector_all("tbody tr"):
             try:
                 tds = row.query_selector_all("td")
                 if len(tds) < 4:
                     continue
 
-                td0 = tds[0]
+                td0  = tds[0]
                 link = td0.query_selector("a[href*='/Projects/detail/']")
                 if not link:
                     continue
@@ -217,7 +238,7 @@ class RootDataCDPScraper:
 
                 investors = []
                 if len(tds) > 6:
-                    inv_td = tds[6]
+                    inv_td    = tds[6]
                     inv_links = inv_td.query_selector_all("a")
                     if inv_links:
                         for il in inv_links:
@@ -232,10 +253,11 @@ class RootDataCDPScraper:
                                 if part and part != "--" and not part.startswith("+"):
                                     investors.append(part)
 
+                full_url = href if href.startswith("http") else f"{_SITE_BASE}{href}"
                 projects.append({
                     "project_name":      name,
                     "source":            "rootdata",
-                    "rootdata_url":      href if href.startswith("http") else f"{_SITE_BASE}{href}",
+                    "rootdata_url":      full_url,
                     "total_funding":     self._parse_amount(amount_text),
                     "latest_round":      self._clean_round(round_text),
                     "latest_round_date": self._parse_date(date_text),
@@ -264,9 +286,7 @@ class RootDataCDPScraper:
 
     @staticmethod
     def _clean_round(text: str) -> str:
-        if not text or text.strip() in ("--", "N/A", ""):
-            return ""
-        return text.strip()
+        return text.strip() if text and text.strip() not in ("--", "N/A", "") else ""
 
     @staticmethod
     def _parse_date(text: str) -> str:
@@ -276,6 +296,10 @@ class RootDataCDPScraper:
         if re.match(r"^\d{2}-\d{2}$", text):
             return f"{datetime.now().year}-{text}"
         return text
+
+    # ────────────────────────────────────────
+    #  翻页
+    # ────────────────────────────────────────
 
     def _go_next_page(self, target: int) -> bool:
         """JS click 绕过遮罩点击 btn-next，内容变化检测确认翻页。"""
@@ -290,7 +314,6 @@ class RootDataCDPScraper:
                     logger.debug("[RootData] btn-next disabled (last page)")
                     return False
 
-                # 记录翻页前首行内容
                 first_row_text = ""
                 try:
                     rows = self._page.query_selector_all("tbody tr")
@@ -299,10 +322,8 @@ class RootDataCDPScraper:
                 except Exception:
                     pass
 
-                # JS 直接触发，绕过遮罩层 pointer-events 拦截
                 next_btn.evaluate("el => el.click()")
 
-                # 轮询等待内容变化（最多 15s）
                 deadline = time.time() + 15
                 while time.time() < deadline:
                     time.sleep(0.6)
@@ -330,8 +351,19 @@ class RootDataCDPScraper:
     #  公开接口
     # ────────────────────────────────────────
 
-    def fetch_all_pages(self, max_pages: int = 10, on_log=None) -> list[dict]:
-        """采集融资项目列表（多页）。"""
+    def fetch_all_pages(
+        self,
+        max_pages: int = 10,
+        on_log=None,
+        early_stop_fn: Optional[Callable[[list[dict]], bool]] = None,
+    ) -> list[dict]:
+        """采集融资项目列表（多页）。
+
+        Args:
+            max_pages:      最大采集页数；0 = 自动读取总页数（全量）
+            on_log:         日志回调
+            early_stop_fn:  每页采集后调用，返回 True 则停止翻页（用于增量 early stop）
+        """
         if on_log:
             on_log("[RootData] Playwright 无头模式启动...")
 
@@ -356,7 +388,21 @@ class RootDataCDPScraper:
 
         self._dismiss_overlays()
 
+        # max_pages=0 → 自动读取总页数
+        if max_pages == 0:
+            total_pages = self.get_total_pages()
+            if total_pages > 0:
+                max_pages = total_pages
+                if on_log:
+                    on_log(f"[RootData] 自动检测总页数: {max_pages} 页")
+            else:
+                max_pages = 999  # fallback: 翻到 btn-next disabled 为止
+                if on_log:
+                    on_log("[RootData] 总页数读取失败，将翻页至末页")
+
         all_projects = []
+        consecutive_stop = 0  # 连续触发 early stop 的页数计数
+
         for page_num in range(1, max_pages + 1):
             if page_num > 1:
                 if not self._go_next_page(page_num):
@@ -377,6 +423,21 @@ class RootDataCDPScraper:
                     f"[RootData] 第 {page_num}/{max_pages} 页: "
                     f"{len(projects)} 个项目 (累计 {len(all_projects)})"
                 )
+
+            # early stop 检测（增量模式）
+            if early_stop_fn is not None:
+                if early_stop_fn(projects):
+                    consecutive_stop += 1
+                    if consecutive_stop >= 2:
+                        if on_log:
+                            on_log(f"[RootData] 连续 {consecutive_stop} 页触发 early stop，停止采集")
+                        break
+                    else:
+                        if on_log:
+                            on_log(f"[RootData] 第 {page_num} 页触发 early stop ({consecutive_stop}/2)，继续验证下一页")
+                else:
+                    consecutive_stop = 0  # 重置连续计数
+
             time.sleep(1.0)
 
         if on_log:
@@ -394,6 +455,6 @@ class RootDataCDPScraper:
         except Exception:
             pass
         finally:
-            self._page = None
+            self._page    = None
             self._browser = None
-            self._pw = None
+            self._pw      = None

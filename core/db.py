@@ -1,6 +1,6 @@
 """
 SQLite 数据库管理 — data/scan.db
-3 表: projects / tokens / scan_logs
+表: projects / tokens / scan_logs
 """
 import os
 import sqlite3
@@ -9,7 +9,7 @@ from datetime import datetime
 
 logger = logging.getLogger("scan-db")
 
-_DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+_DB_DIR  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 _DB_PATH = os.path.join(_DB_DIR, "scan.db")
 
 _SCHEMA = """
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS projects (
     tags TEXT,
     source TEXT,
     rootdata_id INTEGER,
+    rootdata_url TEXT,
     cryptorank_slug TEXT,
     total_funding REAL,
     latest_round TEXT,
@@ -32,6 +33,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT DEFAULT (datetime('now')),
     UNIQUE(project_name)
 );
+
+CREATE INDEX IF NOT EXISTS idx_projects_rootdata_url ON projects(rootdata_url);
 
 CREATE TABLE IF NOT EXISTS tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +62,7 @@ CREATE TABLE IF NOT EXISTS scan_logs (
     scan_type TEXT,
     status TEXT DEFAULT 'running',
     total_projects INTEGER DEFAULT 0,
+    new_projects INTEGER DEFAULT 0,
     funded_with_token INTEGER DEFAULT 0,
     not_listed INTEGER DEFAULT 0,
     cmc_verified INTEGER DEFAULT 0,
@@ -67,6 +71,13 @@ CREATE TABLE IF NOT EXISTS scan_logs (
     error_message TEXT
 );
 """
+
+# 迁移脚本：对已有 DB 补列（幂等）
+_MIGRATIONS = [
+    "ALTER TABLE projects ADD COLUMN rootdata_url TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_projects_rootdata_url ON projects(rootdata_url)",
+    "ALTER TABLE scan_logs ADD COLUMN new_projects INTEGER DEFAULT 0",
+]
 
 
 def get_connection() -> sqlite3.Connection:
@@ -81,7 +92,13 @@ def get_connection() -> sqlite3.Connection:
 def init_db():
     conn = get_connection()
     conn.executescript(_SCHEMA)
-    conn.commit()
+    # 迁移旧库（忽略"列已存在"错误）
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+            conn.commit()
+        except Exception:
+            pass
     conn.close()
     logger.info("[DB] 数据库初始化完成: %s", _DB_PATH)
 
@@ -106,6 +123,7 @@ def upsert_project(conn: sqlite3.Connection, data: dict) -> int:
                     ELSE COALESCE(?, source)
                 END,
                 rootdata_id = COALESCE(?, rootdata_id),
+                rootdata_url = COALESCE(?, rootdata_url),
                 cryptorank_slug = COALESCE(?, cryptorank_slug),
                 total_funding = COALESCE(?, total_funding),
                 latest_round = COALESCE(?, latest_round),
@@ -118,7 +136,8 @@ def upsert_project(conn: sqlite3.Connection, data: dict) -> int:
         """, (
             data.get("logo"), data.get("description"), data.get("tags"),
             data.get("source", ""), data.get("source"),
-            data.get("rootdata_id"), data.get("cryptorank_slug"),
+            data.get("rootdata_id"), data.get("rootdata_url"),
+            data.get("cryptorank_slug"),
             data.get("total_funding"), data.get("latest_round"),
             data.get("latest_round_date"), data.get("investors"),
             data.get("website"), data.get("twitter"),
@@ -128,14 +147,15 @@ def upsert_project(conn: sqlite3.Connection, data: dict) -> int:
         cur = conn.execute("""
             INSERT INTO projects (
                 project_name, logo, description, tags, source,
-                rootdata_id, cryptorank_slug, total_funding,
+                rootdata_id, rootdata_url, cryptorank_slug, total_funding,
                 latest_round, latest_round_date, investors,
                 website, twitter, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data["project_name"], data.get("logo"), data.get("description"),
             data.get("tags"), data.get("source"),
-            data.get("rootdata_id"), data.get("cryptorank_slug"),
+            data.get("rootdata_id"), data.get("rootdata_url"),
+            data.get("cryptorank_slug"),
             data.get("total_funding"), data.get("latest_round"),
             data.get("latest_round_date"), data.get("investors"),
             data.get("website"), data.get("twitter"),
@@ -205,6 +225,36 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
 
     conn.commit()
     return tid
+
+
+def get_known_rootdata_urls(conn: sqlite3.Connection) -> set[str]:
+    """返回 DB 中已有的 rootdata_url 集合，用于增量去重。"""
+    rows = conn.execute(
+        "SELECT rootdata_url FROM projects WHERE rootdata_url IS NOT NULL AND rootdata_url != ''"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def get_scan_meta(conn: sqlite3.Connection) -> dict:
+    """返回扫描元信息：上次全量/增量时间、总项目数、是否可增量。"""
+    total = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+
+    last_full = conn.execute(
+        "SELECT finished_at FROM scan_logs WHERE scan_type='full' AND status='done' "
+        "ORDER BY finished_at DESC LIMIT 1"
+    ).fetchone()
+
+    last_inc = conn.execute(
+        "SELECT finished_at FROM scan_logs WHERE scan_type='incremental' AND status='done' "
+        "ORDER BY finished_at DESC LIMIT 1"
+    ).fetchone()
+
+    return {
+        "total_projects": total,
+        "last_full_scan_at": last_full[0] if last_full else None,
+        "last_incremental_at": last_inc[0] if last_inc else None,
+        "can_incremental": total > 0,
+    }
 
 
 def create_scan_log(conn: sqlite3.Connection, scan_id: str,
