@@ -525,6 +525,84 @@ async def edit_project_token(project_id: int, req: TokenEditRequest):
         conn.close()
 
 
+# ---------- 深度代币发现 ---------- #
+
+@app.post("/api/deep-discover")
+async def deep_discover():
+    """深度代币发现：通过 RootData 详情页 API 逐个查询无代币项目的 tokenSymbol。"""
+    _cleanup_tasks()
+
+    task_id = str(uuid.uuid4())[:8]
+    _tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "progress": [],
+        "result": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    def _run():
+        task = _tasks[task_id]
+        try:
+            from core.db import get_connection, upsert_token
+            from core.rootdata_detail_scraper import RootDataDetailScraper
+
+            def on_log(msg):
+                _append_progress(task, msg)
+
+            conn = get_connection()
+            # 查询无代币但有 rootdata_url 的项目
+            rows = conn.execute("""
+                SELECT p.id, p.project_name, p.rootdata_url
+                FROM projects p
+                WHERE p.id NOT IN (SELECT project_id FROM tokens WHERE token_symbol != '')
+                AND p.rootdata_url IS NOT NULL AND p.rootdata_url != ''
+                ORDER BY p.id
+            """).fetchall()
+
+            projects = [{"id": r[0], "project_name": r[1], "rootdata_url": r[2]} for r in rows]
+            on_log(f"[DeepDiscovery] 待查询项目: {len(projects)}")
+
+            if not projects:
+                on_log("[DeepDiscovery] 没有需要深度匹配的项目")
+                task["result"] = {"found": 0, "empty": 0, "failed": 0}
+                task["status"] = "done"
+                return
+
+            proxy = get_proxy()
+            scraper = RootDataDetailScraper(proxy=proxy)
+            result = scraper.batch_scrape(projects, on_log=on_log)
+
+            # 入库发现的代币
+            found_count = 0
+            for item in result["found"]:
+                upsert_token(conn, item["id"], {
+                    "token_symbol": item["token_symbol"],
+                    "token_name":   item.get("token_name", item["token_symbol"]),
+                    "cmc_listed":   0,
+                    "verification_source": "rootdata_detail",
+                })
+                found_count += 1
+
+            conn.close()
+            on_log(f"[DeepDiscovery] 入库完成: {found_count} 个代币")
+
+            task["result"] = result["stats"]
+            task["status"] = "done"
+
+        except Exception as e:
+            logger.exception("[DeepDiscovery] 任务失败")
+            task["status"] = "error"
+            task["result"] = {"error": str(e)}
+            _append_progress(task, f"失败: {e}")
+        finally:
+            task["finished_at"] = datetime.now().isoformat()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "running"}
+
+
 # ---------- 扫描历史 ---------- #
 
 @app.get("/api/scan-logs")

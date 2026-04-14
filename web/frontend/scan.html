@@ -92,6 +92,31 @@
         </div>
       </div>
 
+      <!-- 代币发现工具 -->
+      <div class="card mt-3">
+        <div class="card-header">🔍 代币发现</div>
+        <div class="card-body">
+          <p class="text-muted mb-2" style="font-size:0.85rem">
+            CMC Map 匹配：下载全量币种表，本地匹配项目名→代币符号（~15秒）
+          </p>
+          <button class="btn btn-cyan w-100 mb-3" @click="discoverTokens()"
+                  :disabled="discoverRunning">
+            <span v-if="discoverRunning"><span class="spinner me-2"></span>匹配中...</span>
+            <span v-else>⚡ CMC Map 快速匹配</span>
+          </button>
+
+          <hr>
+          <p class="text-muted mb-2" style="font-size:0.85rem">
+            RootData 深度匹配：逐个查询详情页 API 获取 tokenSymbol（~6h）
+          </p>
+          <button class="btn btn-warning w-100" @click="deepDiscover()"
+                  :disabled="discoverRunning">
+            <span v-if="deepRunning"><span class="spinner me-2"></span>深度匹配中...</span>
+            <span v-else>🔬 RootData 深度匹配</span>
+          </button>
+        </div>
+      </div>
+
       <!-- 扫描结果 -->
       <div class="card mt-3" v-if="result">
         <div class="card-header">📊 扫描结果</div>
@@ -120,9 +145,9 @@
           <div class="progress-log" ref="logBox" id="logBox">
             <div v-for="line in progress" class="line"
                  :class="{
-                   success: line.includes('✅'),
-                   error: line.includes('❌'),
-                   info: line.includes('[Scanner]') || line.includes('==='),
+                   success: line.includes('✅') || line.includes('完成'),
+                   error: line.includes('❌') || line.includes('失败'),
+                   info: line.includes('[Scanner]') || line.includes('[Discovery]') || line.includes('[DeepDiscovery]') || line.includes('==='),
                  }">{{ line }}</div>
             <div v-if="!progress.length" class="text-muted p-3">等待扫描启动...</div>
           </div>
@@ -182,6 +207,8 @@ function ScanApp() {
     meta: { total_pages: '?', last_full_scan_at: null, last_incremental_at: null, can_incremental: false },
     taskId: null,
     isRunning: false,
+    discoverRunning: false,
+    deepRunning: false,
     progress: [],
     result: null,
     logs: [],
@@ -249,12 +276,16 @@ function ScanApp() {
         if (task.status !== 'running') {
           this.stopPolling();
           this.result = task.result;
+          this.discoverRunning = false;
+          this.deepRunning = false;
           localStorage.removeItem('scan_task_id');
           await this.loadLogs();
         }
       } catch (e) {
         this.stopPolling();
         this.isRunning = false;
+        this.discoverRunning = false;
+        this.deepRunning = false;
         localStorage.removeItem('scan_task_id');
       }
     },
@@ -281,6 +312,37 @@ function ScanApp() {
         this.logs = [];
       } catch (e) {
         toast('清空失败: ' + e.message, 'error');
+      }
+    },
+    async discoverTokens() {
+      try {
+        this.progress = [];
+        this.result = null;
+        this.discoverRunning = true;
+        const res = await API.post('/api/discover-tokens');
+        this.taskId = res.task_id;
+        localStorage.setItem('scan_task_id', this.taskId);
+        this.startPolling();
+        toast('CMC Map 匹配已启动', 'success');
+      } catch (e) {
+        this.discoverRunning = false;
+        toast('启动失败: ' + e.message, 'error');
+      }
+    },
+    async deepDiscover() {
+      if (!confirm('深度匹配将逐个查询 RootData 详情页，预计耗时 ~6h。确认启动？')) return;
+      try {
+        this.progress = [];
+        this.result = null;
+        this.deepRunning = true;
+        const res = await API.post('/api/deep-discover');
+        this.taskId = res.task_id;
+        localStorage.setItem('scan_task_id', this.taskId);
+        this.startPolling();
+        toast('深度匹配已启动', 'success');
+      } catch (e) {
+        this.deepRunning = false;
+        toast('启动失败: ' + e.message, 'error');
       }
     },
     fmtTime: (s) => fmt.datetime(s),
