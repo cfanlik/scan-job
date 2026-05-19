@@ -20,6 +20,8 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+os.makedirs(os.path.join(_PROJECT_ROOT, "logs"), exist_ok=True)
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -214,9 +216,17 @@ async def scan_start(req: ScanRequest):
             from core.scanner import Scanner
             from core.db import get_connection, get_scan_meta
 
+            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"=== Scan Task {task_id} Started ===\n")
+
             def on_log(msg):
                 _append_progress(task, msg)
-
+                try:
+                    with open(log_file, "a", encoding="utf-8") as lf:
+                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except:
+                    pass
             proxy   = get_proxy()
             cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
 
@@ -453,8 +463,17 @@ async def discover_tokens():
             from core.db import get_connection, get_projects_without_token, upsert_token
             from core.token_discovery import TokenDiscovery
 
+            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"=== Discovery Task {task_id} Started ===\n")
+
             def on_log(msg):
                 _append_progress(task, msg)
+                try:
+                    with open(log_file, "a", encoding="utf-8") as lf:
+                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except:
+                    pass
 
             conn = get_connection()
             projects = get_projects_without_token(conn)
@@ -556,9 +575,17 @@ async def deep_discover():
             from core.db import get_connection, upsert_token
             from core.rootdata_detail_scraper import RootDataDetailScraper
 
+            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"=== Deep Discovery Task {task_id} Started ===\n")
+
             def on_log(msg):
                 _append_progress(task, msg)
-
+                try:
+                    with open(log_file, "a", encoding="utf-8") as lf:
+                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except:
+                    pass
             conn = get_connection()
             # 查询无代币但有 rootdata_url 的项目
             rows = conn.execute("""

@@ -472,14 +472,17 @@ class RootDataCDPScraper:
             projects = self._parse_current_page()
             if not projects:
                 if on_log:
-                    on_log(f"[RootData] 第 {page_num} 页无数据，停止")
+                    on_log(f"[RootData] ⚠️ 第 {page_num} 页解析为空，当前页可能无有效项目数据，停止")
                 break
 
             all_projects.extend(projects)
             if on_log:
+                # 记录这页前几个项目的名字作为简要样例
+                sample_names = [p["project_name"] for p in projects[:3]]
+                sample_str = ", ".join(sample_names) + ("..." if len(projects) > 3 else "")
                 on_log(
-                    f"[RootData] 第 {page_num}/{max_pages} 页: "
-                    f"{len(projects)} 个项目 (累计 {len(all_projects)})"
+                    f"[RootData] ✅ 第 {page_num}/{max_pages} 页成功解析 {len(projects)} 个项目 | "
+                    f"样例: {sample_str} | 累计已获取: {len(all_projects)} 个"
                 )
 
             if early_stop_fn is not None:

@@ -94,7 +94,9 @@ class Scanner:
                 tokens_saved += 1
 
         if on_log:
-            on_log(f"[Scanner] 入库 {total_saved} 个项目, {tokens_saved} 个代币")
+            saved_names = [p["project_name"] for p in list(project_map.values())[:5]]
+            names_str = ", ".join(saved_names) + ("..." if len(project_map) > 5 else "")
+            on_log(f"[Scanner] 入库 {total_saved} 个项目, {tokens_saved} 个代币。样例: {names_str}")
         return total_saved, tokens_saved
 
     # ────────────────────────────────────────
