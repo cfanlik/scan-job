@@ -43,14 +43,14 @@ class RootDataCDPScraper:
         proxy_url = get_proxy()
         kwargs = {
             "headless": True,
-            "viewport": {"width": 1440, "height": 900},
+            "geoip": True,
         }
         if proxy_url:
             kwargs["proxy"] = {"server": proxy_url}
 
         self._camoufox_ctx = Camoufox(**kwargs)
         self._browser = self._camoufox_ctx.__enter__()
-        self._page = self._browser.new_page()
+        self._page = self._browser.new_page(viewport={"width": 1440, "height": 900})
 
     def _solve_cloudflare(self) -> None:
         """移植 Scrapling 的 Cloudflare 自动识别与点击逻辑。"""
