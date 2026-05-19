@@ -1,18 +1,9 @@
 """
-RootData 融资数据爬虫 (Playwright 无头模式)
+RootData 融资数据爬虫 (Camoufox 无头模式)
 
 架构:
-  playwright Chromium 无头 → 登录 cn.rootdata.com → DOM 提取融资列表 → 分页翻页
-  兼容 Linux VPS 无桌面环境
-
-数据流:
-  1. 启动无头 Chromium → 检测登录态 → 未登录则自动登录
-  2. 导航 /Fundraising → 解析渲染后的 DOM 表格
-  3. JS click 绕过遮罩 + btn-next + 内容变化检测翻页
-  4. 支持 get_total_pages() 自动读取总页数
-  5. 支持 early_stop_fn 每页回调，用于增量扫描提前终止
-
-采集频率: 全量首次 / 增量每日一次
+  Camoufox (隐身 Firefox) → 登录 cn.rootdata.com → DOM 提取融资列表 → 分页翻页
+  移植 Scrapling 的 CF 盾牌点击逻辑绕过拦截
 """
 import json
 import logging
@@ -20,6 +11,7 @@ import math
 import os
 import re
 import time
+import random
 from datetime import datetime
 from typing import Callable, Optional
 
@@ -29,14 +21,13 @@ _SITE_BASE = "https://cn.rootdata.com"
 
 
 class RootDataCDPScraper:
-    """RootData Playwright 无头爬虫（接口与原 DrissionPage 版保持一致）。"""
+    """RootData Camoufox 无头爬虫（解决 Cloudflare）。"""
 
     def __init__(self, email: str = "", password: str = ""):
         self.email    = email    or os.environ.get("ROOTDATA_EMAIL", "")
         self.password = password or os.environ.get("ROOTDATA_PASSWORD", "")
-        self._pw      = None
+        self._camoufox_ctx = None
         self._browser = None
-        self._context = None
         self._page    = None
 
     # ────────────────────────────────────────
@@ -46,38 +37,73 @@ class RootDataCDPScraper:
     def _ensure_browser(self):
         if self._page is not None:
             return
-        from playwright.sync_api import sync_playwright
+        from camoufox.sync_api import Camoufox
         from config import get_proxy
 
-        self._pw = sync_playwright().start()
-        
-        args = [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--no-first-run",
-            "--disable-extensions",
-        ]
-        
         proxy_url = get_proxy()
+        kwargs = {
+            "headless": True,
+            "viewport": {"width": 1440, "height": 900},
+        }
         if proxy_url:
-            args.append(f"--proxy-server={proxy_url}")
+            kwargs["proxy"] = {"server": proxy_url}
 
-        self._browser = self._pw.chromium.launch(
-            headless=True,
-            args=args,
-        )
-        self._context = self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1440, "height": 900},
-            locale="zh-CN",
-        )
-        self._page = self._context.new_page()
+        self._camoufox_ctx = Camoufox(**kwargs)
+        self._browser = self._camoufox_ctx.__enter__()
+        self._page = self._browser.new_page()
+
+    def _solve_cloudflare(self) -> None:
+        """移植 Scrapling 的 Cloudflare 自动识别与点击逻辑。"""
+        if not self._page:
+            return
+
+        try:
+            self._page.wait_for_timeout(3000)
+            content = self._page.content()
+            
+            if "<title>Just a moment...</title>" not in content and "cf_turnstile" not in content and "cf-turnstile" not in content:
+                return
+                
+            logger.info("[RootData] 侦测到 Cloudflare 拦截，尝试解决...")
+            
+            # 交互式验证检测
+            if "Verifying you are human" in content or "cf-turnstile" in content:
+                box_selector = "#cf_turnstile div, #cf-turnstile div, .turnstile>div>div"
+                iframe = self._page.frame(url=re.compile(r"challenges\.cloudflare\.com"))
+                
+                outer_box = None
+                if iframe is not None:
+                    try:
+                        self._page.wait_for_timeout(1000)
+                        outer_box = iframe.frame_element().bounding_box()
+                    except Exception:
+                        pass
+                
+                if not outer_box:
+                    try:
+                        outer_box = self._page.locator(box_selector).last.bounding_box()
+                    except Exception:
+                        pass
+                
+                if outer_box:
+                    captcha_x = outer_box["x"] + random.randint(20, 30)
+                    captcha_y = outer_box["y"] + random.randint(20, 30)
+                    self._page.mouse.click(captcha_x, captcha_y, delay=random.randint(100, 200), button="left")
+                    logger.info("[RootData] 模拟点击 Cloudflare 盾牌...")
+                    self._page.wait_for_timeout(3000)
+            
+            attempts = 0
+            while "<title>Just a moment...</title>" in self._page.content() or "cf-turnstile" in self._page.content():
+                if attempts >= 15:
+                    logger.warning("[RootData] 等待 Cloudflare 消失超时")
+                    break
+                self._page.wait_for_timeout(1000)
+                attempts += 1
+                
+            if "<title>Just a moment...</title>" not in self._page.content():
+                logger.info("[RootData] Cloudflare 盾牌解除确认")
+        except Exception as e:
+            logger.warning(f"[RootData] Cloudflare 解决异常: {e}")
 
     def _check_login(self) -> bool:
         url = self._page.url or ""
@@ -100,7 +126,8 @@ class RootDataCDPScraper:
         if on_log:
             on_log("[RootData] 执行登录...")
 
-        self._page.goto(f"{_SITE_BASE}/login", wait_until="networkidle", timeout=30000)
+        self._page.goto(f"{_SITE_BASE}/login", wait_until="networkidle", timeout=45000)
+        self._solve_cloudflare()
         time.sleep(2)
 
         inputs = self._page.query_selector_all("input")
@@ -120,7 +147,7 @@ class RootDataCDPScraper:
                 break
 
         try:
-            self._page.wait_for_url(lambda url: "/login" not in url, timeout=10000)
+            self._page.wait_for_url(lambda url: "/login" not in url, timeout=15000)
         except Exception:
             pass
 
@@ -183,14 +210,6 @@ class RootDataCDPScraper:
 
     def _parse_current_page(self) -> list[dict]:
         """从当前渲染的 DOM 表格提取融资项目列表。
-
-        表格列结构:
-          td[0]: 项目名 + 描述 + logo
-          td[1]: 轮次
-          td[2]: 金额
-          td[3]: 估值
-          td[4]: 日期
-          td[6]: 投资方
         """
         projects = []
         try:
@@ -366,21 +385,14 @@ class RootDataCDPScraper:
         on_log=None,
         early_stop_fn: Optional[Callable[[list[dict]], bool]] = None,
     ) -> list[dict]:
-        """采集融资项目列表（多页）。
-
-        Args:
-            max_pages:      最大采集页数；0 = 自动读取总页数（全量）
-            on_log:         日志回调
-            early_stop_fn:  每页采集后调用，返回 True 则停止翻页（用于增量 early stop）
-        """
         if on_log:
-            on_log("[RootData] Playwright 无头模式启动...")
+            on_log("[RootData] Camoufox 无头模式启动...")
 
         self._ensure_browser()
 
         self._page.goto(f"{_SITE_BASE}/Fundraising", wait_until="domcontentloaded", timeout=60000)
+        self._solve_cloudflare()
         
-        # 显式等待第一次的表格数据加载完成。加上代理后速度可能稍慢。
         try:
             self._page.wait_for_selector("tbody tr", timeout=45000)
             if on_log:
@@ -404,6 +416,7 @@ class RootDataCDPScraper:
                     wait_until="domcontentloaded",
                     timeout=60000,
                 )
+                self._solve_cloudflare()
                 try:
                     self._page.wait_for_selector("tbody tr", timeout=45000)
                 except Exception:
@@ -412,7 +425,6 @@ class RootDataCDPScraper:
 
         self._dismiss_overlays()
 
-        # 默认只勾选 With Token
         if on_log:
             on_log("[RootData] 应用高级筛选: Token Issuance -> With Token")
         try:
@@ -425,7 +437,6 @@ class RootDataCDPScraper:
                         }
                     });
                 """)
-                # 显式等待列表的刷新动作
                 time.sleep(5)
                 try:
                     self._page.wait_for_selector("tbody tr", timeout=20000)
@@ -436,7 +447,6 @@ class RootDataCDPScraper:
             if on_log:
                 on_log(f"[RootData] 点击 With Token 失败: {e}，将抓取全部")
 
-        # max_pages=0 → 自动读取总页数
         if max_pages == 0:
             total_pages = self.get_total_pages()
             if total_pages > 0:
@@ -444,12 +454,12 @@ class RootDataCDPScraper:
                 if on_log:
                     on_log(f"[RootData] 自动检测总页数: {max_pages} 页")
             else:
-                max_pages = 999  # fallback: 翻到 btn-next disabled 为止
+                max_pages = 999
                 if on_log:
                     on_log("[RootData] 总页数读取失败，将翻页至末页")
 
         all_projects = []
-        consecutive_stop = 0  # 连续触发 early stop 的页数计数
+        consecutive_stop = 0
 
         for page_num in range(1, max_pages + 1):
             if page_num > 1:
@@ -472,7 +482,6 @@ class RootDataCDPScraper:
                     f"{len(projects)} 个项目 (累计 {len(all_projects)})"
                 )
 
-            # early stop 检测（增量模式）
             if early_stop_fn is not None:
                 if early_stop_fn(projects):
                     consecutive_stop += 1
@@ -484,7 +493,7 @@ class RootDataCDPScraper:
                         if on_log:
                             on_log(f"[RootData] 第 {page_num} 页触发 early stop ({consecutive_stop}/2)，继续验证下一页")
                 else:
-                    consecutive_stop = 0  # 重置连续计数
+                    consecutive_stop = 0
 
             time.sleep(1.0)
 
@@ -494,15 +503,17 @@ class RootDataCDPScraper:
         return all_projects
 
     def close(self):
-        """关闭浏览器。"""
+        """关闭浏览器与释放资源。"""
         try:
+            if self._page:
+                self._page.close()
             if self._browser:
                 self._browser.close()
-            if self._pw:
-                self._pw.stop()
+            if self._camoufox_ctx:
+                self._camoufox_ctx.__exit__(None, None, None)
         except Exception:
             pass
         finally:
             self._page    = None
             self._browser = None
-            self._pw      = None
+            self._camoufox_ctx = None

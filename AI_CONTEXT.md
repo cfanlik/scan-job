@@ -11,7 +11,7 @@
 | 后端 | Python 3.12+ + FastAPI + Uvicorn |
 | 前端 | Tabler UI Kit (CDN) + Petite-Vue 0.4 (CDN) |
 | 数据库 | SQLite（`data/scan.db`） |
-| 爬虫 | DrissionPage CDP（RootData 登录态 DOM 提取） |
+| 爬虫 | Camoufox 无头模式（绕过 Cloudflare + DOM 表格提取） |
 | 代理 | `config.get_proxy()` 统一入口（全局单代理） |
 | 资产核对 | CMC Pro API（/v1/cryptocurrency/map + /v2/market-pairs） |
 
@@ -25,7 +25,7 @@ scan-job/
 ├── .env.example               # 环境变量模板
 ├── requirements.txt           # Python 依赖
 ├── core/                      # 核心业务逻辑
-│   ├── rootdata_scraper.py    # RootData CDP 爬虫（DrissionPage + 登录 + DOM 表格提取）
+│   ├── rootdata_scraper.py    # RootData 爬虫（Camoufox 引擎 + CF 盾识别 + DOM 表格提取）
 │   ├── cryptorank_scraper.py  # CryptoRank 融资爬虫（已停用 — VIP 限制）
 │   ├── cmc_verifier.py        # CMC API 资产核对（symbol→id→market-pairs）
 │   ├── scanner.py             # 主扫描调度引擎（RootData → CMC 核对 → 入库）
@@ -49,9 +49,10 @@ scan-job/
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  ① RootData CDP 采集                              │
-│     DrissionPage 连接桌面 Chrome                  │
-│     登录 cn.rootdata.com → 翻页 DOM 表格提取     │
+│  ① RootData 采集                                  │
+│     Camoufox 无头浏览器 (隐身 Firefox)            │
+│     登录 cn.rootdata.com → 处理 Cloudflare 验证  │
+│     自动翻页 → DOM 表格提取                       │
 │     每页 30 项目 → 项目名/轮次/金额/日期/投资方  │
 └────────────────────┬─────────────────────────────┘
                      │ 去重入库（project_name 主键）
@@ -78,11 +79,11 @@ scan-job/
 
 ## RootData 爬虫架构
 
-```
-DrissionPage ChromiumPage(连接桌面 Chrome)
+```text
+Camoufox 浏览器实例 (基于 Firefox, 强力防指纹识别)
   │
   ├─ 登录检测 → 未登录: 自动填写 email/password → 点击登录
-  │                      登录态由桌面 Chrome 保持
+  │                      内建 _solve_cloudflare() 模拟点击突破 5 秒盾
   │
   ├─ 导航 /Fundraising → DOM 提取 table.b-table tbody tr
   │   td[0]: 项目名 (div.name 最后一个 span) + logo (img) + 描述 + href
