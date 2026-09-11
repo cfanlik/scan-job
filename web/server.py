@@ -1,6 +1,6 @@
 """
 scan-job Web API Server
-FastAPI 后端 — 融资代币扫描平台
+FastAPI 后端 — CryptoRank API v3 + Upbit 资方拟合度 + 融资代币扫描平台
 
 启动: python web/server.py
 端口: 3600
@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from config import CMC_API_KEY, get_proxy
+from config import CMC_API_KEY, get_proxy, CRYPTORANK_API_KEYS, acquire_cryptorank_key
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,15 +79,12 @@ def _cleanup_tasks():
 
 
 def _append_progress(task: dict, msg: str):
-    progress = task.setdefault("progress", [])
-    progress.append(msg)
-    if len(progress) > MAX_PROGRESS_LINES:
-        task["progress"] = [
-            f"... (已省略 {len(progress) - MAX_PROGRESS_LINES} 条) ..."
-        ] + progress[-MAX_PROGRESS_LINES:]
+    task["progress"].append(msg)
+    if len(task["progress"]) > MAX_PROGRESS_LINES:
+        task["progress"] = task["progress"][-MAX_PROGRESS_LINES:]
 
 
-# ---------- Lifespan ---------- #
+# ---------- 应用生命周期 ---------- #
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -95,41 +92,37 @@ async def _lifespan(app: FastAPI):
     init_db()
     logger.info("[STARTUP] 数据库已初始化")
     yield
+    _tasks.clear()
+    gc.collect()
+    logger.info("[SHUTDOWN] 服务已安全关闭")
 
 
-# ---------- App ---------- #
 app = FastAPI(
     title="scan-job API",
-    description="融资代币扫描平台",
-    version="1.0.0",
+    description="CryptoRank API v3 采集引擎 + Upbit 资方拟合度 + 融资代币扫描",
+    version="2.0.0",
     lifespan=_lifespan,
 )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
-# ---------- Models ---------- #
-
-class ScanRequest(BaseModel):
-    max_rootdata_pages: int = 10   # 0 = 自动读取总页数（全量）
-    enable_cmc_verify: bool = True
-    scan_mode: str = "auto"        # full | incremental | auto
+_FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
+_STATIC_DIR = os.path.join(_FRONTEND_DIR, "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
-class SettingsUpdate(BaseModel):
-    cmc_api_key: str = ""
-    proxy_url: str = ""
-    proxy_enabled: bool = True
-
-
-# ---------- Health / Stats ---------- #
+# ---------- 状态与概览 ---------- #
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "service": "scan-job", "version": "2.0.0"}
 
 
 @app.get("/api/stats")
@@ -142,144 +135,135 @@ async def stats():
         conn.close()
 
 
-# ---------- Settings ---------- #
-
 def _mask_key(key: str) -> str:
     if not key or len(key) < 8:
-        return "" if not key else "***"
-    return f"{key[:4]}***{key[-4:]}"
+        return "****"
+    return key[:4] + "****" + key[-4:]
 
 
 @app.get("/api/settings")
 async def get_settings():
-    proxy_url = os.environ.get("PROXY_URL", "")
-    proxy_enabled = os.environ.get("PROXY_ENABLED", "true").lower() in ("1", "true", "yes")
+    from config import PROXY_URL, PROXY_ENABLED, CRYPTORANK_API_KEYS
+    key = acquire_cryptorank_key()
     return {
-        "cmc_api_key": _mask_key(os.environ.get("CMC_API_KEY", "") or CMC_API_KEY),
-        "cmc_configured": bool(os.environ.get("CMC_API_KEY", "") or CMC_API_KEY),
-        "proxy_url": proxy_url,
-        "proxy_enabled": proxy_enabled,
+        "cmc_api_key_set": bool(CMC_API_KEY),
+        "cmc_api_key_masked": _mask_key(CMC_API_KEY),
+        "cryptorank_keys_count": len(CRYPTORANK_API_KEYS),
+        "cryptorank_key_masked": _mask_key(key or ""),
+        "proxy_url": PROXY_URL,
+        "proxy_enabled": PROXY_ENABLED,
     }
+
+
+class SettingsUpdate(BaseModel):
+    cmc_api_key: str | None = None
+    cryptorank_api_key: str | None = None
+    proxy_url: str | None = None
+    proxy_enabled: bool | None = None
 
 
 @app.post("/api/settings")
 async def update_settings(s: SettingsUpdate):
     env_path = os.path.join(_PROJECT_ROOT, ".env")
-    existing = {}
+    lines = []
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    existing[k.strip()] = v.strip()
+            lines = f.readlines()
 
-    if s.cmc_api_key:
-        existing["CMC_API_KEY"] = s.cmc_api_key
-        os.environ["CMC_API_KEY"] = s.cmc_api_key
-    if s.proxy_url:
-        existing["PROXY_URL"] = s.proxy_url
-        os.environ["PROXY_URL"] = s.proxy_url
-    existing["PROXY_ENABLED"] = "true" if s.proxy_enabled else "false"
-    os.environ["PROXY_ENABLED"] = existing["PROXY_ENABLED"]
+    updates = {}
+    if s.cmc_api_key is not None:
+        updates["CMC_API_KEY"] = s.cmc_api_key
+    if s.cryptorank_api_key is not None:
+        updates["CRYPTORANK_API_KEY"] = s.cryptorank_api_key
+    if s.proxy_url is not None:
+        updates["PROXY_URL"] = s.proxy_url
+    if s.proxy_enabled is not None:
+        updates["PROXY_ENABLED"] = "true" if s.proxy_enabled else "false"
 
-    import config as _cfg
-    _cfg.PROXY_ENABLED = s.proxy_enabled
-    _cfg.PROXY_URL = os.environ.get("PROXY_URL", "") or _cfg.PROXY_URL
+    new_lines = []
+    seen = set()
+    for line in lines:
+        k = line.split("=")[0].strip() if "=" in line else ""
+        if k in updates:
+            new_lines.append(f"{k}={updates[k]}\n")
+            seen.add(k)
+        else:
+            new_lines.append(line)
+    for k, v in updates.items():
+        if k not in seen:
+            new_lines.append(f"{k}={v}\n")
 
     with open(env_path, "w", encoding="utf-8") as f:
-        f.write("# scan-job 配置\n")
-        for k, v in existing.items():
-            f.write(f"{k}={v}\n")
+        f.writelines(new_lines)
 
-    return {"ok": True, "message": "配置已保存"}
+    from dotenv import load_dotenv
+    load_dotenv(env_path, override=True)
+
+    return {"ok": True, "message": "配置已保存并生效"}
 
 
-# ---------- 扫描任务 ---------- #
+# ---------- 扫描管理 ---------- #
+
+class ScanRequest(BaseModel):
+    mode: str = "auto"
+    max_pages: int = 0
+    enable_cmc_verify: bool = True
+
 
 @app.post("/api/scan/start")
 async def scan_start(req: ScanRequest):
     _cleanup_tasks()
+    for tid, t in _tasks.items():
+        if t.get("status") == "running":
+            raise HTTPException(409, f"扫描任务 {tid} 正在运行中")
 
-    task_id = str(uuid.uuid4())[:8]
+    task_id = uuid.uuid4().hex[:8]
     _tasks[task_id] = {
-        "task_id": task_id,
         "status": "running",
         "progress": [],
-        "result": None,
         "created_at": datetime.now().isoformat(),
+        "finished_at": None,
+        "result": None,
+        "mode": req.mode,
     }
 
     def _run():
         task = _tasks[task_id]
+        log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
+
+        def on_log(msg):
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"[{ts}] {msg}"
+            logger.info("[Task %s] %s", task_id, msg)
+            _append_progress(task, line)
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+
         try:
             from core.scanner import Scanner
-            from core.db import get_connection, get_scan_meta
+            from config import CMC_API_KEY, get_proxy
 
-            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"=== Scan Task {task_id} Started ===\n")
-
-            def on_log(msg):
-                _append_progress(task, msg)
-                try:
-                    with open(log_file, "a", encoding="utf-8") as lf:
-                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-                except:
-                    pass
-            proxy   = get_proxy()
-            cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
-
-            scanner = Scanner(proxy=proxy, cmc_api_key=cmc_key)
-
-            # 决定扫描模式
-            mode = req.scan_mode
-            if mode == "auto":
-                conn_tmp = get_connection()
-                meta = get_scan_meta(conn_tmp)
-                conn_tmp.close()
-                mode = "incremental" if meta["can_incremental"] else "full"
-                on_log(f"[Scanner] auto 模式 → {mode}")
-
-            if mode == "incremental":
-                result = scanner.run_incremental_scan(
-                    on_log=on_log,
-                    max_rootdata_pages=req.max_rootdata_pages or 50,
-                    enable_cmc_verify=req.enable_cmc_verify,
-                )
-            else:
-                result = scanner.run_full_scan(
-                    on_log=on_log,
-                    max_rootdata_pages=req.max_rootdata_pages,
-                    enable_cmc_verify=req.enable_cmc_verify,
-                )
-
+            scanner = Scanner(
+                proxy=get_proxy(),
+                cmc_api_key=CMC_API_KEY,
+            )
+            result = scanner.run_scan(mode=req.mode, on_log=on_log)
             task["result"] = result
             task["status"] = result.get("status", "done")
-
         except Exception as e:
-            logger.exception("[SCAN] 任务失败")
+            logger.exception("[Task %s] 执行失败", task_id)
             task["status"] = "error"
             task["result"] = {"error": str(e)}
-            _append_progress(task, f"❌ 失败: {e}")
+            on_log(f"任务异常失败: {e}")
         finally:
             task["finished_at"] = datetime.now().isoformat()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-
     return {"task_id": task_id, "status": "running"}
-
-
-@app.get("/api/scan/meta")
-async def scan_meta():
-    """返回扫描元信息：上次全量/增量时间、是否可增量扫描。"""
-    from core.db import get_connection, get_scan_meta
-    conn = get_connection()
-    try:
-        return get_scan_meta(conn)
-    finally:
-        conn.close()
 
 
 @app.get("/api/scan/status/{task_id}")
@@ -290,353 +274,94 @@ async def scan_status(task_id: str):
     return task
 
 
-@app.post("/api/scan/stop/{task_id}")
-async def scan_stop(task_id: str):
-    task = _tasks.get(task_id)
-    if not task:
-        raise HTTPException(404, "任务不存在")
-    task["status"] = "cancelled"
-    task["finished_at"] = datetime.now().isoformat()
-    return {"ok": True}
+@app.get("/api/scan/active")
+async def get_active_task():
+    for tid, t in _tasks.items():
+        if t.get("status") == "running":
+            return {"task_id": tid, "status": "running", "created_at": t.get("created_at")}
+    return {"task_id": None, "status": "idle"}
 
 
-# ---------- 项目列表 ---------- #
+# ---------- Upbit 拟合度与未上所专用 API ---------- #
+
+@app.get("/api/tokens/upbit-candidates")
+async def upbit_candidates(min_score: int = Query(70, ge=0, le=100), limit: int = Query(50, ge=1, le=200)):
+    """获取 Upbit 潜在上币候选（高拟合度未上 Upbit 代币）。"""
+    from core.db import get_connection, get_upbit_candidates
+    conn = get_connection()
+    try:
+        data = get_upbit_candidates(conn, min_score=min_score, limit=limit)
+        return {"data": data, "count": len(data), "min_score": min_score}
+    finally:
+        conn.close()
+
+
+@app.get("/api/tokens/unlisted-gems")
+async def unlisted_gems(limit: int = Query(50, ge=1, le=200)):
+    """获取融资发币未上任何中心化大所的代币。"""
+    from core.db import get_connection, get_unlisted_gems
+    conn = get_connection()
+    try:
+        data = get_unlisted_gems(conn, limit=limit)
+        return {"data": data, "count": len(data)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/upbit/profile")
+async def upbit_profile():
+    """获取 Upbit 资方偏好特征基因图谱。"""
+    from core.upbit_profiler import UPBIT_BASELINE_FUNDS, UpbitProfiler
+    from config import get_proxy
+    profiler = UpbitProfiler(proxy=get_proxy())
+    _, symbols = profiler.fetch_upbit_markets()
+
+    funds_list = []
+    for k, v in UPBIT_BASELINE_FUNDS.items():
+        funds_list.append({
+            "key": k,
+            "name": v["name"],
+            "tier": v["tier"],
+            "base_weight": v["base_weight"],
+            "upbit_correlation": v["upbit_corr"],
+        })
+    funds_list.sort(key=lambda x: (x["tier"], -x["base_weight"]))
+
+    return {
+        "total_upbit_symbols": len(symbols),
+        "total_baseline_funds": len(funds_list),
+        "funds": funds_list,
+    }
+
+
+# ---------- 项目与代币查询 ---------- #
 
 @app.get("/api/projects")
 async def projects_list(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    source: str = Query(None),
-    search: str = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    source: str | None = None,
+    search: str | None = None,
+    unlisted_only: bool = False,
+    upbit_candidate_only: bool = False,
 ):
     from core.db import get_connection, get_projects
     conn = get_connection()
     try:
-        rows, total = get_projects(conn, offset, limit, source, search)
-        return {"data": rows, "total": total, "offset": offset, "limit": limit}
-    finally:
-        conn.close()
-
-
-@app.get("/api/projects/{project_id}")
-async def project_detail(project_id: int):
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "项目不存在")
-
-        tokens = conn.execute(
-            "SELECT * FROM tokens WHERE project_id = ?", (project_id,)
-        ).fetchall()
-
+        offset = (page - 1) * limit
+        rows, total = get_projects(
+            conn, offset=offset, limit=limit, source=source, search=search,
+            unlisted_only=unlisted_only, upbit_candidate_only=upbit_candidate_only
+        )
         return {
-            "project": dict(row),
-            "tokens": [dict(t) for t in tokens],
+            "data": rows,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": max(1, (total + limit - 1) // limit),
         }
     finally:
         conn.close()
-
-
-@app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: int):
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "项目不存在")
-        conn.execute("DELETE FROM tokens WHERE project_id = ?", (project_id,))
-        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-        conn.commit()
-        return {"ok": True, "message": f"项目 {project_id} 及关联代币已删除"}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/tokens/{token_id}")
-async def delete_token(token_id: int):
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT id FROM tokens WHERE id = ?", (token_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "代币不存在")
-        conn.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
-        conn.commit()
-        return {"ok": True, "message": f"代币 {token_id} 已删除"}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/data/clear")
-async def clear_all_data():
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        t_count = conn.execute("SELECT COUNT(*) FROM tokens").fetchone()[0]
-        p_count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
-        conn.execute("DELETE FROM tokens")
-        conn.execute("DELETE FROM projects")
-        conn.execute("DELETE FROM scan_logs")
-        conn.commit()
-        return {"ok": True, "message": f"已清空 {p_count} 个项目, {t_count} 个代币"}
-    finally:
-        conn.close()
-
-
-# ---------- 代币列表 ---------- #
-
-@app.get("/api/tokens")
-async def tokens_list(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    not_listed_only: bool = Query(False),
-):
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        where = "WHERE t.token_symbol != ''"
-        if not_listed_only:
-            where += " AND t.cmc_listed = 0 AND t.cr_traded = 0"
-
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM tokens t {where}"
-        ).fetchone()[0]
-
-        rows = conn.execute(f"""
-            SELECT t.*, p.project_name, p.logo, p.total_funding,
-                   p.latest_round, p.source, p.investors
-            FROM tokens t
-            LEFT JOIN projects p ON p.id = t.project_id
-            {where}
-            ORDER BY t.created_at DESC
-            LIMIT ? OFFSET ?
-        """, (limit, offset)).fetchall()
-
-        return {"data": [dict(r) for r in rows], "total": total}
-    finally:
-        conn.close()
-
-
-# ---------- 手动 CMC 核对 ---------- #
-
-@app.post("/api/verify")
-async def manual_verify(symbols: list[str] = None):
-    if not symbols:
-        raise HTTPException(400, "请提供 symbol 列表")
-
-    cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
-    if not cmc_key:
-        raise HTTPException(400, "CMC API Key 未配置")
-
-    from core.cmc_verifier import CMCVerifier
-    verifier = CMCVerifier(api_key=cmc_key, proxy=get_proxy())
-    results = verifier.verify_batch(symbols)
-    return {"results": results}
-
-
-# ---------- 代币发现 ---------- #
-
-@app.post("/api/discover-tokens")
-async def discover_tokens():
-    """异步批量代币发现：下载 CMC 全量 Map 匹配无 token 的项目。"""
-    cmc_key = os.environ.get("CMC_API_KEY", "") or CMC_API_KEY
-    if not cmc_key:
-        raise HTTPException(400, "CMC API Key 未配置")
-
-    _cleanup_tasks()
-
-    task_id = str(uuid.uuid4())[:8]
-    _tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "progress": [],
-        "result": None,
-        "created_at": datetime.now().isoformat(),
-    }
-
-    def _run():
-        task = _tasks[task_id]
-        try:
-            from core.db import get_connection, get_projects_without_token, upsert_token
-            from core.token_discovery import TokenDiscovery
-
-            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"=== Discovery Task {task_id} Started ===\n")
-
-            def on_log(msg):
-                _append_progress(task, msg)
-                try:
-                    with open(log_file, "a", encoding="utf-8") as lf:
-                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-                except:
-                    pass
-
-            conn = get_connection()
-            projects = get_projects_without_token(conn)
-            on_log(f"[Discovery] 待匹配项目: {len(projects)}")
-
-            if not projects:
-                on_log("[Discovery] 所有项目已有代币，无需匹配")
-                task["result"] = {"matched": 0, "unmatched": 0}
-                task["status"] = "done"
-                return
-
-            proxy = get_proxy()
-            discovery = TokenDiscovery(cmc_api_key=cmc_key, proxy=proxy)
-            result = discovery.batch_discover(projects, on_log=on_log)
-
-            # 入库匹配结果
-            matched_count = 0
-            for m in result["matched"]:
-                upsert_token(conn, m["id"], {
-                    "token_symbol": m["symbol"],
-                    "token_name":   m["cmc_name"],
-                    "cmc_listed":   1,
-                    "verification_source": f"cmc_map_{m['match_method']}",
-                })
-                matched_count += 1
-
-            conn.close()
-            on_log(f"[Discovery] 入库完成: {matched_count} 个代币")
-
-            task["result"] = result["stats"]
-            task["status"] = "done"
-
-        except Exception as e:
-            logger.exception("[Discovery] 任务失败")
-            task["status"] = "error"
-            task["result"] = {"error": str(e)}
-            _append_progress(task, f"失败: {e}")
-        finally:
-            task["finished_at"] = datetime.now().isoformat()
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return {"task_id": task_id, "status": "running"}
-
-
-class TokenEditRequest(BaseModel):
-    token_symbol: str
-
-
-@app.put("/api/projects/{project_id}/token")
-async def edit_project_token(project_id: int, req: TokenEditRequest):
-    """手动设置项目的代币符号。"""
-    from core.db import get_connection, upsert_token
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "项目不存在")
-
-        upsert_token(conn, project_id, {
-            "token_symbol": req.token_symbol.upper(),
-            "token_name":   req.token_symbol.upper(),
-            "cmc_listed":   0,
-            "verification_source": "manual",
-        })
-        return {"ok": True, "message": f"项目 {project_id} 代币已设为 {req.token_symbol.upper()}"}
-    finally:
-        conn.close()
-
-
-@app.get("/api/scan/active-task")
-async def get_active_task():
-    """返回当前正在运行的一个扫描或发现任务的 ID"""
-    for tid, task in _tasks.items():
-        if task.get("status") == "running":
-            return {"task_id": tid}
-    return {"task_id": None}
-
-
-# ---------- 深度代币发现 ---------- #
-
-@app.post("/api/deep-discover")
-async def deep_discover():
-    """深度代币发现：通过 RootData 详情页 API 逐个查询无代币项目的 tokenSymbol。"""
-    _cleanup_tasks()
-
-    task_id = str(uuid.uuid4())[:8]
-    _tasks[task_id] = {
-        "task_id": task_id,
-        "status": "running",
-        "progress": [],
-        "result": None,
-        "created_at": datetime.now().isoformat(),
-    }
-
-    def _run():
-        task = _tasks[task_id]
-        try:
-            from core.db import get_connection, upsert_token
-            from core.rootdata_detail_scraper import RootDataDetailScraper
-
-            log_file = os.path.join(_PROJECT_ROOT, "logs", f"task_{task_id}.log")
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"=== Deep Discovery Task {task_id} Started ===\n")
-
-            def on_log(msg):
-                _append_progress(task, msg)
-                try:
-                    with open(log_file, "a", encoding="utf-8") as lf:
-                        lf.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-                except:
-                    pass
-            conn = get_connection()
-            # 查询无代币但有 rootdata_url 的项目
-            rows = conn.execute("""
-                SELECT p.id, p.project_name, p.rootdata_url
-                FROM projects p
-                WHERE p.id NOT IN (SELECT project_id FROM tokens WHERE token_symbol != '')
-                AND p.rootdata_url IS NOT NULL AND p.rootdata_url != ''
-                ORDER BY p.id
-            """).fetchall()
-
-            projects = [{"id": r[0], "project_name": r[1], "rootdata_url": r[2]} for r in rows]
-            on_log(f"[DeepDiscovery] 待查询项目: {len(projects)}")
-
-            if not projects:
-                on_log("[DeepDiscovery] 没有需要深度匹配的项目")
-                task["result"] = {"found": 0, "empty": 0, "failed": 0}
-                task["status"] = "done"
-                return
-
-            proxy = get_proxy()
-            scraper = RootDataDetailScraper(proxy=proxy)
-            result = scraper.batch_scrape(projects, on_log=on_log)
-
-            # 入库发现的代币
-            found_count = 0
-            for item in result["found"]:
-                upsert_token(conn, item["id"], {
-                    "token_symbol": item["token_symbol"],
-                    "token_name":   item.get("token_name", item["token_symbol"]),
-                    "cmc_listed":   0,
-                    "verification_source": "rootdata_detail",
-                })
-                found_count += 1
-
-            conn.close()
-            on_log(f"[DeepDiscovery] 入库完成: {found_count} 个代币")
-
-            task["result"] = result["stats"]
-            task["status"] = "done"
-
-        except Exception as e:
-            logger.exception("[DeepDiscovery] 任务失败")
-            task["status"] = "error"
-            task["result"] = {"error": str(e)}
-            _append_progress(task, f"失败: {e}")
-        finally:
-            task["finished_at"] = datetime.now().isoformat()
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    return {"task_id": task_id, "status": "running"}
 
 
 # ---------- 扫描历史 ---------- #
@@ -651,45 +376,13 @@ async def scan_logs(limit: int = Query(20, ge=1, le=100)):
         conn.close()
 
 
-@app.delete("/api/scan-logs/{scan_id}")
-async def delete_scan_log(scan_id: str):
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT id FROM scan_logs WHERE scan_id = ?", (scan_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "记录不存在")
-        conn.execute("DELETE FROM scan_logs WHERE scan_id = ?", (scan_id,))
-        conn.commit()
-        return {"ok": True, "message": f"扫描记录 {scan_id} 已删除"}
-    finally:
-        conn.close()
-
-
-@app.delete("/api/scan-logs")
-async def clear_scan_logs():
-    from core.db import get_connection
-    conn = get_connection()
-    try:
-        count = conn.execute("SELECT COUNT(*) FROM scan_logs").fetchone()[0]
-        conn.execute("DELETE FROM scan_logs")
-        conn.commit()
-        return {"ok": True, "message": f"已清空 {count} 条扫描记录"}
-    finally:
-        conn.close()
-
-
-# ---------- 静态文件 & 路由 ---------- #
-
-_FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
-
+# ---------- 页面路由 ---------- #
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return RedirectResponse("/dashboard")
 
 
-# 页面路由 → HTML
 for _page in ("dashboard", "projects", "scan", "settings"):
     _html_path = os.path.join(_FRONTEND_DIR, f"{_page}.html")
 
@@ -701,17 +394,8 @@ for _page in ("dashboard", "projects", "scan", "settings"):
             raise HTTPException(404, "页面不存在")
         return handler
 
-    app.add_api_route(f"/{_page}", _make_handler(_html_path), methods=["GET"],
-                      response_class=HTMLResponse)
-
-# 静态资源
-_STATIC_DIR = os.path.join(_FRONTEND_DIR, "static")
-if os.path.isdir(_STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    app.add_api_route(f"/{_page}", _make_handler(_html_path), methods=["GET"], response_class=HTMLResponse)
 
 
-
-
-if __name__ == '__main__':
-    uvicorn.run('server:app', host='0.0.0.0', port=3600, reload=False)
-
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="0.0.0.0", port=3600, reload=False)
