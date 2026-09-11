@@ -12,114 +12,129 @@
 
 <nav class="navbar navbar-expand-lg">
   <div class="container-xl">
-    <a class="navbar-brand text-white" href="/dashboard">
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="me-2">
+    <a class="navbar-brand text-white d-flex align-items-center" href="/dashboard">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none"
+           stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="me-2">
         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
       </svg>
-      scan-job
+      <span class="fw-bold tracking-wide">scan-job</span>
+      <span class="badge bg-primary-subtle text-info border border-info ms-2" style="font-size: 0.7rem;">PRO</span>
     </a>
     <div class="navbar-nav ms-auto">
       <a class="nav-link" href="/dashboard">仪表盘</a>
       <a class="nav-link active" href="/projects">项目列表</a>
       <a class="nav-link" href="/scan">扫描管理</a>
-      <a class="nav-link" href="/settings">设置</a>
+      <a class="nav-link" href="/settings">系统设置</a>
     </div>
   </div>
 </nav>
 
 <div class="container-xl py-4" v-scope="ProjectsApp()" @vue:mounted="load()">
 
-  <!-- 工具栏 -->
-  <div class="card mb-3">
-    <div class="card-body py-2">
+  <!-- 搜索与筛选工具栏 -->
+  <div class="card mb-3 shadow-sm">
+    <div class="card-body py-3">
       <div class="row g-2 align-items-center">
         <div class="col-md-3">
-          <input type="text" class="form-control" placeholder="搜索项目或代币符号..."
+          <input type="text" class="form-control" placeholder="搜索项目名、代币符号、赛道..."
                  v-model="search" @input="debounceLoad()">
         </div>
-        <div class="col-md-2">
+        <div class="col-md-3">
           <select class="form-select" v-model="filterMode" @change="load()">
             <option value="all">全部代币/项目</option>
-            <option value="unlisted">💎 仅未上大所 (Gems)</option>
-            <option value="upbit_candidate">🔥 Upbit 候选标的</option>
+            <option value="unlisted">💎 仅未上主流大所 (Unlisted Gems)</option>
+            <option value="upbit_candidate">🔥 90天 Upbit 高拟合度候选 (&ge;70分)</option>
           </select>
         </div>
         <div class="col-md-2">
           <select class="form-select" v-model="source" @change="load()">
             <option value="">全部数据源</option>
             <option value="cryptorank">CryptoRank</option>
-            <option value="rootdata">RootData</option>
           </select>
         </div>
-        <div class="col-md-2 text-end">
-          <span class="text-muted">共 {{ total }} 条</span>
+        <div class="col-md-2 text-md-end text-muted small">
+          共 <strong class="text-light">{{ total }}</strong> 条记录
         </div>
-        <div class="col-md-3 text-end">
-          <button class="btn btn-sm btn-primary me-1" @click="exportCSV()">📥 导出</button>
-          <button class="btn btn-sm btn-danger" @click="clearAll()" :disabled="!total">
-            🗑️ 清空全部
+        <div class="col-md-2 text-end">
+          <button class="btn btn-sm btn-outline-info me-1" @click="exportCSV()">📥 导出 CSV</button>
+          <button class="btn btn-sm btn-outline-danger" @click="clearAll()" :disabled="!total">
+            🗑️ 清空
           </button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 表格 -->
-  <div class="card">
+  <!-- 数据主表格 -->
+  <div class="card shadow-sm">
     <div class="card-body p-0">
-      <table class="table table-hover mb-0">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>项目</th>
-            <th>代币</th>
-            <th>Upbit 资方拟合度</th>
-            <th>命中偏好资方</th>
-            <th>融资总额</th>
-            <th>最新轮次</th>
-            <th>投资方</th>
-            <th>上所状态</th>
-            <th style="width:60px">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(p, i) in projects" :key="p.id">
-            <td>{{ offset + i + 1 }}</td>
-            <td>
-              <img v-if="p.logo" :src="p.logo" class="project-logo" onerror="this.style.display='none'">
-              {{ p.project_name }}
-            </td>
-            <td>
-              <strong class="text-primary">{{ p.token_symbol || '-' }}</strong>
-            </td>
-            <td v-html="fmtUpbitFit(p.upbit_fit_score, p.upbit_listed)"></td>
-            <td v-html="fmtBackers(p.matched_upbit_backers)"></td>
-            <td v-html="fmtMoney(p.total_funding)"></td>
-            <td>{{ p.latest_round || '-' }}</td>
-            <td>{{ fmtInvestors(p.investors) }}</td>
-            <td>
-              <span v-if="p.upbit_listed" class="badge bg-success">Upbit已上线</span>
-              <span v-else-if="p.unlisted_gem_flag" class="badge bg-danger">未上所 (Gem)</span>
-              <span v-else-if="p.cmc_listed" class="badge bg-info">CMC已收录</span>
-              <span v-else class="badge bg-secondary">其他</span>
-            </td>
-            <td>
-              <button class="btn btn-sm btn-ghost-danger p-0" title="删除" @click="deleteItem(p.id)">
-                🗑️
-              </button>
-            </td>
-          </tr>
-          <tr v-if="!projects.length">
-            <td colspan="10" class="p-4 text-center text-muted">暂无数据</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              <th style="width: 40px;">#</th>
+              <th>项目</th>
+              <th>代币</th>
+              <th>赛道</th>
+              <th>90天Upbit拟合度</th>
+              <th>命中偏好资方</th>
+              <th>现货/合约覆盖</th>
+              <th>CB联动</th>
+              <th>融资总额</th>
+              <th>最新轮次</th>
+              <th>核心投资方</th>
+              <th>当前状态</th>
+              <th style="width: 50px; text-align: center;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(p, i) in projects" :key="p.id">
+              <td class="text-muted small">{{ offset + i + 1 }}</td>
+              <td>
+                <div class="d-flex align-items-center">
+                  <img v-if="p.logo" :src="p.logo" class="project-logo me-2" onerror="this.style.display='none'">
+                  <strong class="text-light">{{ p.project_name }}</strong>
+                </div>
+              </td>
+              <td>
+                <strong class="text-primary font-monospace fs-5">{{ p.token_symbol || '-' }}</strong>
+              </td>
+              <td v-html="fmtSector(p.sector_name)"></td>
+              <td v-html="fmtUpbitFit(p.upbit_fit_score, p.upbit_listed, p.fit_breakdown)"></td>
+              <td v-html="fmtBackers(p.matched_upbit_backers)"></td>
+              <td v-html="fmtMarkets(p.has_spot, p.has_futures, p.spot_exchanges, p.futures_exchanges)"></td>
+              <td v-html="fmtCoinbase(p.coinbase_listed)"></td>
+              <td><strong class="text-warning" v-html="fmtMoney(p.total_funding)"></strong></td>
+              <td><span class="badge badge-muted">{{ p.latest_round || '-' }}</span></td>
+              <td>
+                <div class="text-truncate text-secondary" style="max-width: 180px;" :title="p.investors">
+                  {{ fmtInvestors(p.investors) }}
+                </div>
+              </td>
+              <td>
+                <span v-if="p.upbit_listed" class="badge badge-upbit-listed">Upbit已上线</span>
+                <span v-else-if="p.unlisted_gem_flag" class="badge badge-unlisted">未上大所 (Gem)</span>
+                <span v-else-if="p.has_spot || p.has_futures" class="badge badge-spot">大所已交易</span>
+                <span v-else-if="p.cmc_listed" class="badge bg-info">CMC已收录</span>
+                <span v-else class="badge badge-muted">链上观察中</span>
+              </td>
+              <td style="text-align: center;">
+                <button class="btn btn-sm btn-ghost-danger p-0" title="删除" @click="deleteItem(p.id)">
+                  🗑️
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!projects.length">
+              <td colspan="13" class="p-4 text-center text-muted">暂无匹配项目数据</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- 分页 -->
+    <!-- 分页控件 -->
     <div class="card-footer d-flex justify-content-between align-items-center py-2" v-if="totalPages > 1">
-      <span class="text-muted">第 {{ page }} / {{ totalPages }} 页</span>
+      <span class="text-muted small">第 {{ page }} / {{ totalPages }} 页 (每页 {{ limit }} 条)</span>
       <div class="btn-group">
         <button class="btn btn-sm btn-outline-secondary" :disabled="page <= 1" @click="goPage(page - 1)">上一页</button>
         <button class="btn btn-sm btn-outline-secondary" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页</button>
@@ -134,6 +149,9 @@
 <script>
 function ProjectsApp() {
   let timer = null;
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialFilter = urlParams.get('filter') || 'all';
+
   return {
     projects: [],
     total: 0,
@@ -141,7 +159,7 @@ function ProjectsApp() {
     limit: 30,
     search: '',
     source: '',
-    filterMode: 'all',
+    filterMode: initialFilter,
     get offset() { return (this.page - 1) * this.limit; },
     get totalPages() { return Math.max(1, Math.ceil(this.total / this.limit)); },
 
@@ -179,7 +197,7 @@ function ProjectsApp() {
       }
     },
     async clearAll() {
-      if (!confirm('警告：确定清空所有数据？')) return;
+      if (!confirm('警告：确定清空所有数据？此操作不可逆！')) return;
       try {
         await API.delete('/api/projects/all');
         Toast.show('已清空', 'success');
@@ -191,11 +209,23 @@ function ProjectsApp() {
     },
     exportCSV() {
       if (!this.projects.length) return;
-      const headers = ['项目名', '代币', 'Upbit拟合度', '融资总额', '最新轮次', '投资方'];
-      const rows = this.projects.map(p => [
-        p.project_name, p.token_symbol || '', p.upbit_fit_score || 0,
-        p.total_funding || '', p.latest_round || '', p.investors || ''
-      ]);
+      const headers = ['项目名', '代币符号', '赛道', '90天Upbit拟合度', '融资总额', '最新轮次', '核心投资方', '现货市场', '合约市场', 'Coinbase联动'];
+      const rows = this.projects.map(p => {
+        const spotEx = Array.isArray(p.spot_exchanges) ? p.spot_exchanges.join('/') : (p.has_spot ? 'YES' : 'NO');
+        const futEx = Array.isArray(p.futures_exchanges) ? p.futures_exchanges.join('/') : (p.has_futures ? 'YES' : 'NO');
+        return [
+          p.project_name,
+          p.token_symbol || '',
+          p.sector_name || '',
+          p.upbit_fit_score || 0,
+          p.total_funding || '',
+          p.latest_round || '',
+          p.investors || '',
+          spotEx,
+          futEx,
+          p.coinbase_listed ? 'YES' : 'NO'
+        ];
+      });
       let csv = '\uFEFF' + headers.join(',') + '\n';
       rows.forEach(r => { csv += r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',') + '\n'; });
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -205,9 +235,12 @@ function ProjectsApp() {
       link.click();
     },
     fmtMoney: (n) => fmt.money(n),
-    fmtUpbitFit: (score, isListed) => fmt.upbitFitBadge(score, isListed),
+    fmtUpbitFit: (score, isListed, bd) => fmt.upbitFitBadge(score, isListed, bd),
     fmtBackers: (b) => fmt.backersBadges(b),
     fmtInvestors: (s) => fmt.investors(s),
+    fmtMarkets: (s, f, se, fe) => fmt.marketBadges(s, f, se, fe),
+    fmtCoinbase: (cb) => fmt.coinbaseBadge(cb),
+    fmtSector: (sec) => fmt.sectorBadge(sec),
   };
 }
 
