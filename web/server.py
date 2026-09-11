@@ -364,6 +364,30 @@ async def projects_list(
         conn.close()
 
 
+@app.delete("/api/projects/all")
+async def delete_all_projects():
+    from core.db import get_connection, clear_all_projects
+    conn = get_connection()
+    try:
+        clear_all_projects(conn)
+        return {"status": "ok", "message": "已清空所有项目数据"}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_single_project(project_id: int):
+    from core.db import get_connection, delete_project
+    conn = get_connection()
+    try:
+        deleted = delete_project(conn, project_id)
+        if not deleted:
+            raise HTTPException(404, "项目不存在")
+        return {"status": "ok", "message": f"项目 {project_id} 已删除"}
+    finally:
+        conn.close()
+
+
 # ---------- 扫描历史 ---------- #
 
 @app.get("/api/scan-logs")

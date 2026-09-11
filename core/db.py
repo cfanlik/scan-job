@@ -1,5 +1,5 @@
 """
-SQLite 数据库管理 — data/scan.db
+SQLite 数据库管理 — data/scan.db (V2 增强版)
 表: projects / tokens / scan_logs / upbit_markets / upbit_fund_profiles
 """
 import os
@@ -13,7 +13,6 @@ logger = logging.getLogger("scan-db")
 _DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 _DB_PATH = os.path.join(_DB_DIR, "scan.db")
 
-# 基础建表 Schema
 _BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +54,13 @@ CREATE TABLE IF NOT EXISTS tokens (
     upbit_listed INTEGER DEFAULT 0,
     matched_upbit_backers TEXT DEFAULT '[]',
     unlisted_gem_flag INTEGER DEFAULT 0,
+    has_spot INTEGER DEFAULT 0,
+    has_futures INTEGER DEFAULT 0,
+    spot_exchanges TEXT DEFAULT '[]',
+    futures_exchanges TEXT DEFAULT '[]',
+    coinbase_listed INTEGER DEFAULT 0,
+    sector_name TEXT,
+    fit_breakdown TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(token_symbol, chain)
 );
@@ -93,7 +99,6 @@ CREATE TABLE IF NOT EXISTS upbit_fund_profiles (
 );
 """
 
-# 增量迁移列（忽略"duplicate column"错误）
 _MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN rootdata_url TEXT",
     "CREATE INDEX IF NOT EXISTS idx_projects_rootdata_url ON projects(rootdata_url)",
@@ -103,8 +108,16 @@ _MIGRATIONS = [
     "ALTER TABLE tokens ADD COLUMN upbit_listed INTEGER DEFAULT 0",
     "ALTER TABLE tokens ADD COLUMN matched_upbit_backers TEXT DEFAULT '[]'",
     "ALTER TABLE tokens ADD COLUMN unlisted_gem_flag INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN has_spot INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN has_futures INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN spot_exchanges TEXT DEFAULT '[]'",
+    "ALTER TABLE tokens ADD COLUMN futures_exchanges TEXT DEFAULT '[]'",
+    "ALTER TABLE tokens ADD COLUMN coinbase_listed INTEGER DEFAULT 0",
+    "ALTER TABLE tokens ADD COLUMN sector_name TEXT",
+    "ALTER TABLE tokens ADD COLUMN fit_breakdown TEXT DEFAULT '{}'",
     "CREATE INDEX IF NOT EXISTS idx_tokens_upbit_score ON tokens(upbit_fit_score DESC)",
     "CREATE INDEX IF NOT EXISTS idx_tokens_unlisted_gem ON tokens(unlisted_gem_flag)",
+    "CREATE INDEX IF NOT EXISTS idx_tokens_spot_futures ON tokens(has_spot, has_futures)",
 ]
 
 
@@ -132,7 +145,6 @@ def init_db():
 
 
 def upsert_project(conn: sqlite3.Connection, data: dict) -> int:
-    """插入或更新项目，返回 project_id。"""
     now = datetime.now().isoformat()
     row = conn.execute(
         "SELECT id FROM projects WHERE project_name = ?",
@@ -196,7 +208,6 @@ def upsert_project(conn: sqlite3.Connection, data: dict) -> int:
 
 
 def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
-    """插入或更新代币信息（含 Upbit 拟合度与未上所标记）。"""
     row = conn.execute(
         "SELECT id FROM tokens WHERE token_symbol = ? AND chain = ?",
         (data.get("token_symbol", ""), data.get("chain", "")),
@@ -205,6 +216,18 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
     matched_str = data.get("matched_upbit_backers")
     if isinstance(matched_str, (list, dict)):
         matched_str = json.dumps(matched_str, ensure_ascii=False)
+
+    spot_ex_str = data.get("spot_exchanges")
+    if isinstance(spot_ex_str, list):
+        spot_ex_str = json.dumps(spot_ex_str, ensure_ascii=False)
+
+    fut_ex_str = data.get("futures_exchanges")
+    if isinstance(fut_ex_str, list):
+        fut_ex_str = json.dumps(fut_ex_str, ensure_ascii=False)
+
+    breakdown_str = data.get("fit_breakdown")
+    if isinstance(breakdown_str, dict):
+        breakdown_str = json.dumps(breakdown_str, ensure_ascii=False)
 
     if row:
         tid = row[0]
@@ -225,7 +248,14 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
                 upbit_fit_score = COALESCE(?, upbit_fit_score),
                 upbit_listed = COALESCE(?, upbit_listed),
                 matched_upbit_backers = COALESCE(?, matched_upbit_backers),
-                unlisted_gem_flag = COALESCE(?, unlisted_gem_flag)
+                unlisted_gem_flag = COALESCE(?, unlisted_gem_flag),
+                has_spot = COALESCE(?, has_spot),
+                has_futures = COALESCE(?, has_futures),
+                spot_exchanges = COALESCE(?, spot_exchanges),
+                futures_exchanges = COALESCE(?, futures_exchanges),
+                coinbase_listed = COALESCE(?, coinbase_listed),
+                sector_name = COALESCE(?, sector_name),
+                fit_breakdown = COALESCE(?, fit_breakdown)
             WHERE id = ?
         """, (
             project_id,
@@ -238,6 +268,9 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
             data.get("last_verified_at"), data.get("verification_source"),
             data.get("upbit_fit_score"), data.get("upbit_listed"),
             matched_str, data.get("unlisted_gem_flag"),
+            data.get("has_spot"), data.get("has_futures"),
+            spot_ex_str, fut_ex_str, data.get("coinbase_listed"),
+            data.get("sector_name"), breakdown_str,
             tid,
         ))
     else:
@@ -247,8 +280,10 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
                 chain, exchanges, cmc_listed, cmc_market_pairs, cr_traded,
                 price, market_cap, fully_diluted_mcap,
                 last_verified_at, verification_source,
-                upbit_fit_score, upbit_listed, matched_upbit_backers, unlisted_gem_flag
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                upbit_fit_score, upbit_listed, matched_upbit_backers, unlisted_gem_flag,
+                has_spot, has_futures, spot_exchanges, futures_exchanges, coinbase_listed,
+                sector_name, fit_breakdown
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             project_id,
             data.get("token_symbol", ""), data.get("token_name"),
@@ -260,7 +295,10 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
             data.get("fully_diluted_mcap"),
             data.get("last_verified_at"), data.get("verification_source"),
             data.get("upbit_fit_score", 0), data.get("upbit_listed", 0),
-            matched_str or "[]", data.get("unlisted_gem_flag", 0)
+            matched_str or "[]", data.get("unlisted_gem_flag", 0),
+            data.get("has_spot", 0), data.get("has_futures", 0),
+            spot_ex_str or "[]", fut_ex_str or "[]", data.get("coinbase_listed", 0),
+            data.get("sector_name", ""), breakdown_str or "{}"
         ))
         tid = cur.lastrowid
 
@@ -269,7 +307,6 @@ def upsert_token(conn: sqlite3.Connection, project_id: int, data: dict) -> int:
 
 
 def upsert_upbit_markets(conn: sqlite3.Connection, markets: list[dict]):
-    """批量同步 Upbit 交易对列表。"""
     now = datetime.now().isoformat()
     for m in markets:
         conn.execute("""
@@ -285,11 +322,12 @@ def upsert_upbit_markets(conn: sqlite3.Connection, markets: list[dict]):
 
 
 def get_upbit_candidates(conn: sqlite3.Connection, min_score: int = 70, limit: int = 50) -> list[dict]:
-    """查询 Upbit 高潜力拟合候选代币 (未上 Upbit 且 fit_score 高)。"""
     rows = conn.execute("""
         SELECT p.project_name, p.logo, p.total_funding, p.latest_round, p.investors,
                t.token_symbol, t.contract_address, t.chain, t.price, t.market_cap,
-               t.upbit_fit_score, t.upbit_listed, t.matched_upbit_backers, t.unlisted_gem_flag
+               t.upbit_fit_score, t.upbit_listed, t.matched_upbit_backers, t.unlisted_gem_flag,
+               t.has_spot, t.has_futures, t.spot_exchanges, t.futures_exchanges, t.coinbase_listed,
+               t.sector_name, t.fit_breakdown
         FROM tokens t
         JOIN projects p ON p.id = t.project_id
         WHERE t.upbit_listed = 0 AND t.upbit_fit_score >= ?
@@ -299,21 +337,23 @@ def get_upbit_candidates(conn: sqlite3.Connection, min_score: int = 70, limit: i
     res = []
     for r in rows:
         d = dict(r)
-        if isinstance(d.get("matched_upbit_backers"), str):
-            try:
-                d["matched_upbit_backers"] = json.loads(d["matched_upbit_backers"])
-            except Exception:
-                pass
+        for k in ("matched_upbit_backers", "spot_exchanges", "futures_exchanges", "fit_breakdown"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except Exception:
+                    pass
         res.append(d)
     return res
 
 
 def get_unlisted_gems(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """查询融资发币未上任何中心化大所的代币。"""
     rows = conn.execute("""
         SELECT p.project_name, p.logo, p.total_funding, p.latest_round, p.investors,
                t.token_symbol, t.contract_address, t.chain, t.price, t.market_cap,
-               t.cmc_listed, t.cmc_market_pairs, t.upbit_fit_score, t.matched_upbit_backers
+               t.cmc_listed, t.cmc_market_pairs, t.upbit_fit_score, t.matched_upbit_backers,
+               t.has_spot, t.has_futures, t.spot_exchanges, t.futures_exchanges, t.coinbase_listed,
+               t.sector_name, t.fit_breakdown
         FROM tokens t
         JOIN projects p ON p.id = t.project_id
         WHERE t.unlisted_gem_flag = 1
@@ -323,11 +363,12 @@ def get_unlisted_gems(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     res = []
     for r in rows:
         d = dict(r)
-        if isinstance(d.get("matched_upbit_backers"), str):
-            try:
-                d["matched_upbit_backers"] = json.loads(d["matched_upbit_backers"])
-            except Exception:
-                pass
+        for k in ("matched_upbit_backers", "spot_exchanges", "futures_exchanges", "fit_breakdown"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except Exception:
+                    pass
         res.append(d)
     return res
 
@@ -351,7 +392,6 @@ def update_scan_log(conn: sqlite3.Connection, scan_id: str, **kwargs):
 def get_projects(conn: sqlite3.Connection, offset=0, limit=50,
                  source=None, search=None, unlisted_only=False,
                  upbit_candidate_only=False) -> tuple[list[dict], int]:
-    """查询项目列表，返回 (rows, total)。"""
     where = []
     params = []
     if source:
@@ -378,7 +418,9 @@ def get_projects(conn: sqlite3.Connection, offset=0, limit=50,
         SELECT p.*, t.token_symbol, t.contract_address, t.chain,
                t.exchanges, t.cmc_listed, t.cmc_market_pairs, t.cr_traded,
                t.price, t.market_cap, t.fully_diluted_mcap,
-               t.upbit_fit_score, t.upbit_listed, t.matched_upbit_backers, t.unlisted_gem_flag
+               t.upbit_fit_score, t.upbit_listed, t.matched_upbit_backers, t.unlisted_gem_flag,
+               t.has_spot, t.has_futures, t.spot_exchanges, t.futures_exchanges, t.coinbase_listed,
+               t.sector_name, t.fit_breakdown
         FROM projects p
         LEFT JOIN tokens t ON t.project_id = p.id
         {where_sql}
@@ -389,18 +431,18 @@ def get_projects(conn: sqlite3.Connection, offset=0, limit=50,
     res = []
     for r in rows:
         d = dict(r)
-        if isinstance(d.get("matched_upbit_backers"), str):
-            try:
-                d["matched_upbit_backers"] = json.loads(d["matched_upbit_backers"])
-            except Exception:
-                pass
+        for k in ("matched_upbit_backers", "spot_exchanges", "futures_exchanges", "fit_breakdown"):
+            if isinstance(d.get(k), str):
+                try:
+                    d[k] = json.loads(d[k])
+                except Exception:
+                    pass
         res.append(d)
 
     return res, total
 
 
 def get_stats(conn: sqlite3.Connection) -> dict:
-    """统计概览。"""
     total = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
     with_token = conn.execute(
         "SELECT COUNT(DISTINCT project_id) FROM tokens WHERE token_symbol != '' AND token_symbol IS NOT NULL"
@@ -422,6 +464,21 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "upbit_candidates": upbit_candidates,
         "last_scan": dict(last_scan) if last_scan else None,
     }
+
+
+def delete_project(conn: sqlite3.Connection, project_id: int) -> bool:
+    cur = conn.cursor()
+    cur.execute("DELETE FROM tokens WHERE project_id = ?", (project_id,))
+    cur.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def clear_all_projects(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute("DELETE FROM tokens")
+    cur.execute("DELETE FROM projects")
+    conn.commit()
 
 
 def get_scan_logs(conn: sqlite3.Connection, limit=20) -> list[dict]:
