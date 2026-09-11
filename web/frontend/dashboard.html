@@ -37,7 +37,7 @@
     <div class="col-md">
       <div class="stat-card">
         <div class="stat-value">{{ stats.total_projects || 0 }}</div>
-        <div class="stat-label">总项目数</div>
+        <div class="stat-label">总监控项目</div>
       </div>
     </div>
     <div class="col-md">
@@ -47,15 +47,15 @@
       </div>
     </div>
     <div class="col-md">
-      <div class="stat-card warning">
-        <div class="stat-value">{{ stats.not_listed || 0 }}</div>
-        <div class="stat-label">未上所代币 (Gems)</div>
+      <div class="stat-card warning border-warning">
+        <div class="stat-value text-warning">{{ stats.not_listed || 0 }}</div>
+        <div class="stat-label">💎 融资未上所 (Gems)</div>
       </div>
     </div>
     <div class="col-md">
       <div class="stat-card danger border-danger">
         <div class="stat-value text-danger">{{ stats.upbit_candidates || 0 }}</div>
-        <div class="stat-label">Upbit 潜力候选</div>
+        <div class="stat-label">🔥 Upbit 优选候选</div>
       </div>
     </div>
     <div class="col-md">
@@ -66,11 +66,67 @@
     </div>
   </div>
 
-  <!-- 看板 1: Upbit 高拟合度潜力上币标的 -->
-  <div class="card mb-4 border-warning">
+  <!-- 看板 1: 融资发币未上交易所 (Unlisted Gems) -->
+  <div class="card mb-4 border-warning shadow-sm">
     <div class="card-header bg-dark-subtle d-flex justify-content-between align-items-center">
-      <span class="fw-bold text-warning">🔥 Upbit 资方高拟合度候选标的 (Upbit Candidates)</span>
-      <span class="badge bg-warning text-dark">基于 Hashed / Dunamu / 头部VC 基因库</span>
+      <div>
+        <span class="fw-bold text-warning fs-3">💎 已经融资发币未上交易所专属看板 (Unlisted Gems)</span>
+        <div class="text-muted small">高融资金额 + 顶级VC背书 + 已发币 + 尚未上线主流CEX (仅链上DEX/储备期)</div>
+      </div>
+      <a href="/projects" class="btn btn-sm btn-outline-warning">进入全量列表</a>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-hover mb-0" v-if="unlistedGems.length">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>项目</th>
+            <th>代币</th>
+            <th>公链 / 合约</th>
+            <th>融资金额</th>
+            <th>最新轮次</th>
+            <th>核心投资方 (Backers)</th>
+            <th>Upbit 拟合度</th>
+            <th>上所状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(t, i) in unlistedGems" :key="t.token_symbol">
+            <td>{{ i + 1 }}</td>
+            <td>
+              <img v-if="t.logo" :src="t.logo" class="project-logo me-1" onerror="this.style.display='none'">
+              <strong>{{ t.project_name || '-' }}</strong>
+            </td>
+            <td><strong class="badge bg-primary fs-4">{{ t.token_symbol || '-' }}</strong></td>
+            <td>
+              <span class="badge bg-dark border me-1">{{ t.chain || 'EVM' }}</span>
+              <span class="text-muted small" v-if="t.contract_address" :title="t.contract_address">
+                {{ t.contract_address.slice(0, 6) }}...{{ t.contract_address.slice(-4) }}
+              </span>
+              <span class="text-muted small" v-else>未公开合约</span>
+            </td>
+            <td><strong class="text-warning" v-html="fmtMoney(t.total_funding)"></strong></td>
+            <td><span class="badge bg-info-subtle text-info border border-info">{{ t.latest_round || 'Seed' }}</span></td>
+            <td><div class="text-truncate" style="max-width:260px" :title="t.investors">{{ t.investors || '-' }}</div></td>
+            <td v-html="fmtUpbitFit(t.upbit_fit_score, false)"></td>
+            <td><span class="badge bg-danger">未上大所 (仅DEX/链上)</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="p-4 text-center text-muted">
+        暂无未上所数据，请前往 <a href="/scan">扫描管理</a> 启动一次扫描。
+      </div>
+    </div>
+  </div>
+
+  <!-- 看板 2: Upbit 资方高拟合度候选标的 -->
+  <div class="card mb-4 border-danger shadow-sm">
+    <div class="card-header bg-dark-subtle d-flex justify-content-between align-items-center">
+      <div>
+        <span class="fw-bold text-danger fs-3">🔥 Upbit 资方偏好高拟合度上币标的 (Upbit Candidates)</span>
+        <div class="text-muted small">基于 Upbit 358 个在线资产建立的资方基因图谱 (Hashed / Dunamu / DWF / 一线VC)</div>
+      </div>
+      <span class="badge bg-danger">加权算法打分 >= 70</span>
     </div>
     <div class="card-body p-0">
       <table class="table table-hover mb-0" v-if="upbitCandidates.length">
@@ -81,19 +137,19 @@
             <th>代币</th>
             <th>Upbit 资方拟合度</th>
             <th>命中 Upbit 偏好资方</th>
-            <th>融资总额</th>
+            <th>融资金额</th>
             <th>最新轮次</th>
-            <th>状态</th>
+            <th>当前状态</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(t, i) in upbitCandidates" :key="t.token_symbol">
             <td>{{ i + 1 }}</td>
             <td>
-              <img v-if="t.logo" :src="t.logo" class="project-logo" onerror="this.style.display='none'">
-              {{ t.project_name || '-' }}
+              <img v-if="t.logo" :src="t.logo" class="project-logo me-1" onerror="this.style.display='none'">
+              <strong>{{ t.project_name || '-' }}</strong>
             </td>
-            <td><strong>{{ t.token_symbol || '-' }}</strong></td>
+            <td><strong class="text-info">{{ t.token_symbol || '-' }}</strong></td>
             <td v-html="fmtUpbitFit(t.upbit_fit_score, t.upbit_listed)"></td>
             <td v-html="fmtBackers(t.matched_upbit_backers)"></td>
             <td v-html="fmtMoney(t.total_funding)"></td>
@@ -106,49 +162,7 @@
         </tbody>
       </table>
       <div v-else class="p-4 text-center text-muted">
-        暂无候选数据，请前往 <a href="/scan">扫描管理</a> 启动一次扫描。
-      </div>
-    </div>
-  </div>
-
-  <!-- 看板 2: 融资发币未上交易所项目 -->
-  <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <span>💎 融资发币未上大所项目 (Unlisted Gems)</span>
-      <a href="/projects?unlisted=1" class="btn btn-sm btn-primary">查看全部</a>
-    </div>
-    <div class="card-body p-0">
-      <table class="table table-hover mb-0" v-if="unlistedGems.length">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>项目</th>
-            <th>代币</th>
-            <th>Upbit 拟合度</th>
-            <th>融资总额</th>
-            <th>最新轮次</th>
-            <th>投资方</th>
-            <th>CMC 状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(t, i) in unlistedGems" :key="t.token_symbol">
-            <td>{{ i + 1 }}</td>
-            <td>
-              <img v-if="t.logo" :src="t.logo" class="project-logo" onerror="this.style.display='none'">
-              {{ t.project_name || '-' }}
-            </td>
-            <td><strong>{{ t.token_symbol || '-' }}</strong></td>
-            <td v-html="fmtUpbitFit(t.upbit_fit_score, false)"></td>
-            <td v-html="fmtMoney(t.total_funding)"></td>
-            <td>{{ t.latest_round || '-' }}</td>
-            <td>{{ fmtInvestors(t.investors) }}</td>
-            <td><span class="badge bg-danger">0 市场对 (未上市)</span></td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="p-4 text-center text-muted">
-        暂无未上所代币数据。
+        暂无候选数据。
       </div>
     </div>
   </div>
@@ -171,10 +185,10 @@ function DashboardApp() {
     async init() {
       try {
         this.stats = await API.get('/api/stats');
-        const resUpbit = await API.get('/api/tokens/upbit-candidates?limit=15');
-        this.upbitCandidates = resUpbit.data || [];
-        const resGems = await API.get('/api/tokens/unlisted-gems?limit=15');
+        const resGems = await API.get('/api/tokens/unlisted-gems?limit=20');
         this.unlistedGems = resGems.data || [];
+        const resUpbit = await API.get('/api/tokens/upbit-candidates?limit=20');
+        this.upbitCandidates = resUpbit.data || [];
       } catch (e) {
         console.error(e);
       }
