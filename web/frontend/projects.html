@@ -34,25 +34,25 @@
   <div class="card mb-3">
     <div class="card-body py-2">
       <div class="row g-2 align-items-center">
-        <div class="col-md-4">
-          <input type="text" class="form-control" placeholder="搜索项目名称..."
+        <div class="col-md-3">
+          <input type="text" class="form-control" placeholder="搜索项目或代币符号..."
                  v-model="search" @input="debounceLoad()">
         </div>
         <div class="col-md-2">
-          <select class="form-select" v-model="source" @change="load()">
-            <option value="">全部来源</option>
-            <option value="rootdata">RootData</option>
-            <option value="cryptorank">CryptoRank</option>
-            <option value="both">Both</option>
+          <select class="form-select" v-model="filterMode" @change="load()">
+            <option value="all">全部代币/项目</option>
+            <option value="unlisted">💎 仅未上大所 (Gems)</option>
+            <option value="upbit_candidate">🔥 Upbit 候选标的</option>
           </select>
         </div>
         <div class="col-md-2">
-          <label class="form-check form-switch mb-0">
-            <input type="checkbox" class="form-check-input" v-model="notListedOnly" @change="load()">
-            <span class="form-check-label">仅未上所</span>
-          </label>
+          <select class="form-select" v-model="source" @change="load()">
+            <option value="">全部数据源</option>
+            <option value="cryptorank">CryptoRank</option>
+            <option value="rootdata">RootData</option>
+          </select>
         </div>
-        <div class="col-md-1 text-end">
+        <div class="col-md-2 text-end">
           <span class="text-muted">共 {{ total }} 条</span>
         </div>
         <div class="col-md-3 text-end">
@@ -74,10 +74,10 @@
             <th>#</th>
             <th>项目</th>
             <th>代币</th>
+            <th>Upbit 资方拟合度</th>
+            <th>命中偏好资方</th>
             <th>融资总额</th>
             <th>最新轮次</th>
-            <th>标签</th>
-            <th>来源</th>
             <th>投资方</th>
             <th>上所状态</th>
             <th style="width:60px">操作</th>
@@ -88,47 +88,41 @@
             <td>{{ offset + i + 1 }}</td>
             <td>
               <img v-if="p.logo" :src="p.logo" class="project-logo" onerror="this.style.display='none'">
-              {{ p.project_name || '-' }}
+              {{ p.project_name }}
             </td>
             <td>
-              <strong>{{ p.token_symbol || '-' }}</strong>
-              <button v-if="!p.token_symbol" class="btn btn-sm btn-ghost-primary p-0 ms-1"
-                      @click="editToken(p.id, p.project_name)" title="设置代币" style="line-height:1;font-size:0.7rem">
-                ✏️
-              </button>
+              <strong class="text-primary">{{ p.token_symbol || '-' }}</strong>
             </td>
+            <td v-html="fmtUpbitFit(p.upbit_fit_score, p.upbit_listed)"></td>
+            <td v-html="fmtBackers(p.matched_upbit_backers)"></td>
             <td v-html="fmtMoney(p.total_funding)"></td>
             <td>{{ p.latest_round || '-' }}</td>
-            <td v-html="fmtTags(p.tags)"></td>
-            <td v-html="fmtSource(p.source)"></td>
             <td>{{ fmtInvestors(p.investors) }}</td>
-            <td v-html="fmtListed(p.cmc_listed, p.cr_traded)"></td>
             <td>
-              <button class="btn btn-sm btn-ghost-danger p-1" @click="deleteProject(p.id, p.project_name)"
-                      title="删除" style="line-height:1">
-                ✕
-              </button>
-              <button class="btn btn-sm btn-ghost-primary p-1 ms-1" @click="editToken(p.id, p.project_name)"
-                      title="编辑代币" style="line-height:1;font-size:0.7rem">
-                ✏️
+              <span v-if="p.upbit_listed" class="badge bg-success">Upbit已上线</span>
+              <span v-else-if="p.unlisted_gem_flag" class="badge bg-danger">未上所 (Gem)</span>
+              <span v-else-if="p.cmc_listed" class="badge bg-info">CMC已收录</span>
+              <span v-else class="badge bg-secondary">其他</span>
+            </td>
+            <td>
+              <button class="btn btn-sm btn-ghost-danger p-0" title="删除" @click="deleteItem(p.id)">
+                🗑️
               </button>
             </td>
           </tr>
+          <tr v-if="!projects.length">
+            <td colspan="10" class="p-4 text-center text-muted">暂无数据</td>
+          </tr>
         </tbody>
       </table>
-      <div v-if="!projects.length" class="p-4 text-center text-muted">暂无数据</div>
     </div>
 
     <!-- 分页 -->
-    <div class="card-footer d-flex justify-content-between align-items-center" v-if="total > limit">
-      <span class="text-muted">
-        {{ offset + 1 }}-{{ Math.min(offset + limit, total) }} / {{ total }}
-      </span>
-      <div>
-        <button class="btn btn-sm btn-outline-secondary me-1" :disabled="offset === 0"
-                @click="offset -= limit; load()">上一页</button>
-        <button class="btn btn-sm btn-outline-secondary" :disabled="offset + limit >= total"
-                @click="offset += limit; load()">下一页</button>
+    <div class="card-footer d-flex justify-content-between align-items-center py-2" v-if="totalPages > 1">
+      <span class="text-muted">第 {{ page }} / {{ totalPages }} 页</span>
+      <div class="btn-group">
+        <button class="btn btn-sm btn-outline-secondary" :disabled="page <= 1" @click="goPage(page - 1)">上一页</button>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="page >= totalPages" @click="goPage(page + 1)">下一页</button>
       </div>
     </div>
   </div>
@@ -139,25 +133,26 @@
 <script src="/static/app.js"></script>
 <script>
 function ProjectsApp() {
-  let _timer = null;
+  let timer = null;
   return {
     projects: [],
     total: 0,
-    offset: 0,
-    limit: 50,
+    page: 1,
+    limit: 30,
     search: '',
     source: '',
-    notListedOnly: false,
+    filterMode: 'all',
+    get offset() { return (this.page - 1) * this.limit; },
+    get totalPages() { return Math.max(1, Math.ceil(this.total / this.limit)); },
+
     async load() {
       try {
-        let url = `/api/projects?offset=${this.offset}&limit=${this.limit}`;
-        if (this.source) url += `&source=${this.source}`;
+        let url = `/api/projects?page=${this.page}&limit=${this.limit}`;
+        if (this.source) url += `&source=${encodeURIComponent(this.source)}`;
         if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
-        // notListedOnly → use tokens endpoint
-        if (this.notListedOnly) {
-          url = `/api/tokens?offset=${this.offset}&limit=${this.limit}&not_listed_only=true`;
-          if (this.search) url += `&search=${encodeURIComponent(this.search)}`;
-        }
+        if (this.filterMode === 'unlisted') url += `&unlisted_only=true`;
+        if (this.filterMode === 'upbit_candidate') url += `&upbit_candidate_only=true`;
+
         const res = await API.get(url);
         this.projects = res.data || [];
         this.total = res.total || 0;
@@ -166,60 +161,56 @@ function ProjectsApp() {
       }
     },
     debounceLoad() {
-      clearTimeout(_timer);
-      _timer = setTimeout(() => { this.offset = 0; this.load(); }, 400);
+      clearTimeout(timer);
+      timer = setTimeout(() => { this.page = 1; this.load(); }, 300);
     },
-    exportCSV() {
-      if (!this.projects.length) return;
-      const headers = ['项目', '代币', '融资总额', '轮次', '来源', '投资方', '上所'];
-      const rows = this.projects.map(p => [
-        p.project_name, p.token_symbol, p.total_funding,
-        p.latest_round, p.source, p.investors, p.cmc_listed ? '是' : '否',
-      ]);
-      const csv = '\uFEFF' + [headers, ...rows].map(r => r.join(',')).join('\n');
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `scan-job-projects-${new Date().toISOString().slice(0,10)}.csv`;
-      a.click();
+    goPage(p) {
+      this.page = p;
+      this.load();
     },
-    async deleteProject(id, name) {
-      if (!confirm(`确定删除项目「${name}」及其关联代币？`)) return;
+    async deleteItem(id) {
+      if (!confirm('确定删除该项目？')) return;
       try {
         await API.delete(`/api/projects/${id}`);
+        Toast.show('已删除', 'success');
         this.load();
       } catch (e) {
-        alert('删除失败: ' + (e.message || e));
+        Toast.show('删除失败: ' + e.message, 'danger');
       }
     },
     async clearAll() {
-      if (!confirm('确定清空全部项目和代币数据？此操作不可撤销！')) return;
-      if (!confirm('再次确认：将删除所有扫描的数据！')) return;
+      if (!confirm('警告：确定清空所有数据？')) return;
       try {
-        const res = await API.delete('/api/data/clear');
-        alert(res.message || '已清空');
+        await API.delete('/api/projects/all');
+        Toast.show('已清空', 'success');
+        this.page = 1;
         this.load();
       } catch (e) {
-        alert('清空失败: ' + (e.message || e));
+        Toast.show('清空失败: ' + e.message, 'danger');
       }
     },
-    async editToken(id, name) {
-      const symbol = prompt(`设置「${name}」的代币符号:`);
-      if (!symbol) return;
-      try {
-        await API.put(`/api/projects/${id}/token`, { token_symbol: symbol.trim() });
-        this.load();
-      } catch (e) {
-        alert('设置失败: ' + (e.message || e));
-      }
+    exportCSV() {
+      if (!this.projects.length) return;
+      const headers = ['项目名', '代币', 'Upbit拟合度', '融资总额', '最新轮次', '投资方'];
+      const rows = this.projects.map(p => [
+        p.project_name, p.token_symbol || '', p.upbit_fit_score || 0,
+        p.total_funding || '', p.latest_round || '', p.investors || ''
+      ]);
+      let csv = '\uFEFF' + headers.join(',') + '\n';
+      rows.forEach(r => { csv += r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(',') + '\n'; });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `scan_projects_${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
     },
     fmtMoney: (n) => fmt.money(n),
-    fmtSource: (s) => fmt.sourceBadge(s),
-    fmtListed: (cmc, cr) => fmt.listedBadge(cmc, cr),
-    fmtTags: (s) => fmt.tags(s),
+    fmtUpbitFit: (score, isListed) => fmt.upbitFitBadge(score, isListed),
+    fmtBackers: (b) => fmt.backersBadges(b),
     fmtInvestors: (s) => fmt.investors(s),
   };
 }
+
 PetiteVue.createApp().mount();
 </script>
 </body>

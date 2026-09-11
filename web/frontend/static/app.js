@@ -54,41 +54,57 @@ const fmt = {
     },
     sourceBadge(s) {
         const colors = {
-            rootdata: '#a78bfa',
             cryptorank: '#fbbf24',
             both: '#34d399',
+            rootdata: '#a78bfa'
         };
-        const c = colors[s] || '#9ca3af';
-        return `<span class="badge" style="background:${c};color:#000;font-weight:600">${s || '-'}</span>`;
+        const c = colors[s] || '#94a3b8';
+        return `<span class="badge" style="background:${c};color:#0f172a">${s || '-'}</span>`;
     },
     listedBadge(cmc, cr) {
-        if (cmc || cr) {
-            return '<span class="badge bg-danger">已上所</span>';
+        if (cmc) return '<span class="badge bg-success">CMC已收录</span>';
+        if (cr) return '<span class="badge bg-info">CR已交易</span>';
+        return '<span class="badge bg-danger">未上市</span>';
+    },
+    upbitFitBadge(score, isListed) {
+        if (isListed) {
+            return `<span class="badge bg-success">已上 Upbit</span>`;
         }
-        return '<span class="badge bg-success">未上所</span>';
+        if (score >= 85) {
+            return `<span class="badge bg-danger text-white">S级 ${score}分</span>`;
+        } else if (score >= 70) {
+            return `<span class="badge bg-warning text-dark">A级 ${score}分</span>`;
+        } else if (score >= 50) {
+            return `<span class="badge bg-info text-white">B级 ${score}分</span>`;
+        }
+        return `<span class="badge bg-secondary text-white">${score || 0}分</span>`;
     },
-    tags(json_str) {
-        try {
-            const arr = JSON.parse(json_str || '[]');
-            return arr.map(t => `<span class="badge bg-dark">${t}</span>`).join(' ');
-        } catch { return ''; }
+    backersBadges(backers) {
+        if (!backers || !backers.length) return '-';
+        return backers.slice(0, 3).map(b => {
+            const name = typeof b === 'object' ? b.name : b;
+            return `<span class="badge bg-dark border border-secondary me-1">${name}</span>`;
+        }).join('');
     },
-    investors(json_str) {
+    investors(s) {
+        if (!s) return '-';
         try {
-            const arr = JSON.parse(json_str || '[]');
-            return arr.slice(0, 3).join(', ') + (arr.length > 3 ? ` +${arr.length - 3}` : '');
-        } catch { return ''; }
+            const arr = typeof s === 'string' ? JSON.parse(s) : s;
+            if (Array.isArray(arr)) return arr.slice(0, 3).join(', ');
+        } catch {
+            return s.length > 30 ? s.slice(0, 30) + '...' : s;
+        }
+        return s;
     },
 };
 
-function toast(msg, type = 'info') {
-    const el = document.createElement('div');
-    el.className = `toast-custom toast-${type}`;
-    el.textContent = msg;
-    document.body.appendChild(el);
-    setTimeout(() => el.classList.add('show'), 10);
-    setTimeout(() => {
-        el.classList.remove('show');
-        setTimeout(() => el.remove(), 300);
-    }, 3000);
-}
+const Toast = {
+    show(msg, type = 'info') {
+        const el = document.createElement('div');
+        el.className = `alert alert-${type} position-fixed top-0 end-0 m-3 shadow`;
+        el.style.zIndex = '9999';
+        el.innerText = msg;
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 3000);
+    },
+};

@@ -34,6 +34,16 @@
     <div class="card-header">⚙️ 系统设置</div>
     <div class="card-body">
 
+      <!-- CryptoRank API Key -->
+      <div class="mb-4">
+        <label class="form-label fw-semibold">CryptoRank API Key (支持 Pro/Sandbox)</label>
+        <input type="password" class="form-control" v-model="cryptorank_api_key"
+               placeholder="输入新 Key（留空不修改）">
+        <small class="text-muted">当前: {{ current_cr }} (配置 Key 数: {{ cr_count }})</small>
+      </div>
+
+      <hr style="border-color: var(--border)">
+
       <!-- CMC API Key -->
       <div class="mb-4">
         <label class="form-label fw-semibold">CoinMarketCap API Key</label>
@@ -52,7 +62,7 @@
           <label class="form-check-label">启用代理</label>
         </div>
         <input type="text" class="form-control" v-model="proxy_url"
-               placeholder="socks5://127.0.0.1:1080">
+               placeholder="socks5://127.0.0.1:42000">
       </div>
 
       <hr style="border-color: var(--border)">
@@ -72,15 +82,20 @@
 <script>
 function SettingsApp() {
   return {
+    cryptorank_api_key: '',
     cmc_api_key: '',
     proxy_url: '',
     proxy_enabled: true,
+    current_cr: '',
+    cr_count: 0,
     current_cmc: '',
     saved: false,
     async load() {
       try {
         const s = await API.get('/api/settings');
-        this.current_cmc = s.cmc_api_key || '未配置';
+        this.current_cr = s.cryptorank_key_masked || '未配置';
+        this.cr_count = s.cryptorank_keys_count || 0;
+        this.current_cmc = s.cmc_api_key_masked || '未配置';
         this.proxy_url = s.proxy_url || '';
         this.proxy_enabled = s.proxy_enabled;
       } catch (e) { console.error(e); }
@@ -91,15 +106,17 @@ function SettingsApp() {
           proxy_url: this.proxy_url,
           proxy_enabled: this.proxy_enabled,
         };
+        if (this.cryptorank_api_key) body.cryptorank_api_key = this.cryptorank_api_key;
         if (this.cmc_api_key) body.cmc_api_key = this.cmc_api_key;
         await API.post('/api/settings', body);
         this.saved = true;
+        this.cryptorank_api_key = '';
         this.cmc_api_key = '';
         await this.load();
-        toast('设置已保存', 'success');
+        Toast.show('设置已保存', 'success');
         setTimeout(() => this.saved = false, 2000);
       } catch (e) {
-        toast('保存失败: ' + e.message, 'error');
+        Toast.show('保存失败: ' + e.message, 'danger');
       }
     },
   };

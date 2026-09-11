@@ -34,25 +34,31 @@
 
   <!-- 统计卡片 -->
   <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md">
       <div class="stat-card">
         <div class="stat-value">{{ stats.total_projects || 0 }}</div>
         <div class="stat-label">总项目数</div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md">
       <div class="stat-card success">
         <div class="stat-value">{{ stats.with_token || 0 }}</div>
         <div class="stat-label">已发币项目</div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md">
       <div class="stat-card warning">
         <div class="stat-value">{{ stats.not_listed || 0 }}</div>
-        <div class="stat-label">未上所代币</div>
+        <div class="stat-label">未上所代币 (Gems)</div>
       </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md">
+      <div class="stat-card danger border-danger">
+        <div class="stat-value text-danger">{{ stats.upbit_candidates || 0 }}</div>
+        <div class="stat-label">Upbit 潜力候选</div>
+      </div>
+    </div>
+    <div class="col-md">
       <div class="stat-card">
         <div class="stat-value">{{ lastScanTime }}</div>
         <div class="stat-label">最近扫描</div>
@@ -60,44 +66,89 @@
     </div>
   </div>
 
-  <!-- 最新未上所代币 -->
-  <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <span>🔍 最新未上所代币 (Top 20)</span>
-      <a href="/projects" class="btn btn-sm btn-primary">查看全部</a>
+  <!-- 看板 1: Upbit 高拟合度潜力上币标的 -->
+  <div class="card mb-4 border-warning">
+    <div class="card-header bg-dark-subtle d-flex justify-content-between align-items-center">
+      <span class="fw-bold text-warning">🔥 Upbit 资方高拟合度候选标的 (Upbit Candidates)</span>
+      <span class="badge bg-warning text-dark">基于 Hashed / Dunamu / 头部VC 基因库</span>
     </div>
     <div class="card-body p-0">
-      <table class="table table-hover mb-0" v-if="tokens.length">
+      <table class="table table-hover mb-0" v-if="upbitCandidates.length">
         <thead>
           <tr>
             <th>#</th>
             <th>项目</th>
             <th>代币</th>
+            <th>Upbit 资方拟合度</th>
+            <th>命中 Upbit 偏好资方</th>
             <th>融资总额</th>
             <th>最新轮次</th>
-            <th>来源</th>
-            <th>投资方</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(t, i) in tokens" :key="t.id">
+          <tr v-for="(t, i) in upbitCandidates" :key="t.token_symbol">
             <td>{{ i + 1 }}</td>
             <td>
               <img v-if="t.logo" :src="t.logo" class="project-logo" onerror="this.style.display='none'">
               {{ t.project_name || '-' }}
             </td>
             <td><strong>{{ t.token_symbol || '-' }}</strong></td>
+            <td v-html="fmtUpbitFit(t.upbit_fit_score, t.upbit_listed)"></td>
+            <td v-html="fmtBackers(t.matched_upbit_backers)"></td>
             <td v-html="fmtMoney(t.total_funding)"></td>
             <td>{{ t.latest_round || '-' }}</td>
-            <td v-html="fmtSource(t.source)"></td>
-            <td>{{ fmtInvestors(t.investors) }}</td>
-            <td v-html="fmtListed(t.cmc_listed, t.cr_traded)"></td>
+            <td>
+              <span v-if="t.unlisted_gem_flag" class="badge bg-danger">未上大所 (Gem)</span>
+              <span v-else class="badge bg-secondary">其他交易所</span>
+            </td>
           </tr>
         </tbody>
       </table>
       <div v-else class="p-4 text-center text-muted">
-        暂无数据，请先执行 <a href="/scan">扫描</a>
+        暂无候选数据，请前往 <a href="/scan">扫描管理</a> 启动一次扫描。
+      </div>
+    </div>
+  </div>
+
+  <!-- 看板 2: 融资发币未上交易所项目 -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>💎 融资发币未上大所项目 (Unlisted Gems)</span>
+      <a href="/projects?unlisted=1" class="btn btn-sm btn-primary">查看全部</a>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-hover mb-0" v-if="unlistedGems.length">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>项目</th>
+            <th>代币</th>
+            <th>Upbit 拟合度</th>
+            <th>融资总额</th>
+            <th>最新轮次</th>
+            <th>投资方</th>
+            <th>CMC 状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(t, i) in unlistedGems" :key="t.token_symbol">
+            <td>{{ i + 1 }}</td>
+            <td>
+              <img v-if="t.logo" :src="t.logo" class="project-logo" onerror="this.style.display='none'">
+              {{ t.project_name || '-' }}
+            </td>
+            <td><strong>{{ t.token_symbol || '-' }}</strong></td>
+            <td v-html="fmtUpbitFit(t.upbit_fit_score, false)"></td>
+            <td v-html="fmtMoney(t.total_funding)"></td>
+            <td>{{ t.latest_round || '-' }}</td>
+            <td>{{ fmtInvestors(t.investors) }}</td>
+            <td><span class="badge bg-danger">0 市场对 (未上市)</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="p-4 text-center text-muted">
+        暂无未上所代币数据。
       </div>
     </div>
   </div>
@@ -110,7 +161,8 @@
 function DashboardApp() {
   return {
     stats: {},
-    tokens: [],
+    upbitCandidates: [],
+    unlistedGems: [],
     get lastScanTime() {
       const s = this.stats.last_scan;
       if (!s) return '-';
@@ -119,15 +171,18 @@ function DashboardApp() {
     async init() {
       try {
         this.stats = await API.get('/api/stats');
-        const res = await API.get('/api/tokens?not_listed_only=true&limit=20');
-        this.tokens = res.data || [];
+        const resUpbit = await API.get('/api/tokens/upbit-candidates?limit=15');
+        this.upbitCandidates = resUpbit.data || [];
+        const resGems = await API.get('/api/tokens/unlisted-gems?limit=15');
+        this.unlistedGems = resGems.data || [];
       } catch (e) {
         console.error(e);
       }
     },
     fmtMoney: (n) => fmt.money(n),
     fmtSource: (s) => fmt.sourceBadge(s),
-    fmtListed: (cmc, cr) => fmt.listedBadge(cmc, cr),
+    fmtUpbitFit: (score, isListed) => fmt.upbitFitBadge(score, isListed),
+    fmtBackers: (b) => fmt.backersBadges(b),
     fmtInvestors: (s) => fmt.investors(s),
   };
 }
